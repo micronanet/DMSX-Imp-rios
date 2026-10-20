@@ -75,6 +75,10 @@ bool podePesquisar(int civ, int t) {
 int contaPesquisaveis(int civ) { int n = 0; for (int t = 0; t < N_TECS; ++t) if (podePesquisar(civ, t)) ++n; return n; }
 
 void escolhePesquisaIA(int civ);
+// tecnologias novas do jogador, à espera de mostrar a janela da descoberta
+const int MAX_TECS_NOVAS = 8;
+uint8_t tecsNovas[MAX_TECS_NOVAS], tecsNovasSabios[MAX_TECS_NOVAS];
+int nTecsNovas = 0;
 void ganhaTec(int civ, int t, bool anuncia) {
   if (t == SEM_TEC) return;
   if (CIV[civ].pesquisa == t) CIV[civ].pesquisa = SEM_TEC;
@@ -82,6 +86,7 @@ void ganhaTec(int civ, int t, bool anuncia) {
   poeTec(civ, t);
   ++CIV[civ].nTecs;
   if (tecDescoberta[t] == 0) tecDescoberta[t] = civ;
+  if (civ == jogador && nTecsNovas < MAX_TECS_NOVAS) { tecsNovasSabios[nTecsNovas] = 0; tecsNovas[nTecsNovas++] = t; }
   if (CIV[civ].pesquisa == t) { CIV[civ].pesquisa = SEM_TEC; CIV[civ].lampadas = 0; }
   if (anuncia && civ != jogador && (CIV[jogador].contacto >> civ & 1))
     mensagem("Os %s descobriram: %s.", nomePovo(civ), TEC[t].nome);
@@ -591,12 +596,31 @@ const char * motivoFundar(int civ, int x, int y) {
   return nullptr;
 }
 
+// já há uma cidade (viva) com este nome?
+bool nomeCidadeUsado(const char * nome) {
+  for (int i = 0; i < MAX_CIDADES; ++i) if (CID[i].viva && strcmp(CID[i].nome, nome) == 0) return true;
+  return false;
+}
+// nome sugerido para uma cidade nova: primeiro os nomes do próprio povo que ainda não existem;
+// depois os dos povos que não estão em jogo; só no fim se numera (o jogador pode sempre mudar o nome)
 void nomeNovaCidade(int civ, char * b) {
   int n = CIV[civ].cidadesFundadas;
   if (civ == 0) { sprintf(b, "Bárbara %d", n + 1); return; }
-  const InfoPovo & P = POVO[CIV[civ].povo];
-  if (n < N_NOMES_CIDADE) strcpy(b, P.cidades[n]);
-  else sprintf(b, "%s %d", P.cidades[n % N_NOMES_CIDADE], n / N_NOMES_CIDADE + 1);
+  const int meu = CIV[civ].povo;
+  for (int k = 0; k < N_NOMES_CIDADE; ++k)
+    if (!nomeCidadeUsado(POVO[meu].cidades[k])) { strcpy(b, POVO[meu].cidades[k]); return; }
+  for (int d = 1; d < N_POVOS; ++d) {
+    int p = (meu + d) % N_POVOS;
+    bool emJogo = false;
+    for (int c = 1; c < N_CIVS; ++c) if (CIV[c].viva && CIV[c].povo == p) emJogo = true;
+    if (emJogo) continue;
+    for (int k = 0; k < N_NOMES_CIDADE; ++k)
+      if (!nomeCidadeUsado(POVO[p].cidades[k])) { strcpy(b, POVO[p].cidades[k]); return; }
+  }
+  for (int k = 2; k < 99; ++k) {
+    snprintf(b, sizeof(((Cidade *) 0)->nome), "%s %d", POVO[meu].cidades[n % N_NOMES_CIDADE], k);
+    if (!nomeCidadeUsado(b)) return;
+  }
 }
 
 int fundaCidade(int civ, int x, int y) {
@@ -608,7 +632,7 @@ int fundaCidade(int civ, int x, int y) {
     nomeNovaCidade(civ, k.nome);
     ++CIV[civ].cidadesFundadas;
     k.prod = UN_MILICIA;
-    if (CIV[civ].capital == SEM) { CIV[civ].capital = i; k.edif |= 1UL << E_PALACIO; k.fundada = 1; }
+    if (CIV[civ].capital == SEM) { CIV[civ].capital = i; k.edif |= 1UL << E_PALACIO; k.fundada |= 1; }
     int p = idxMapa(x, y);
     mapaMelh[p] |= M_ESTRADA;
     mapaMelh[p] &= ~(M_MINA | M_FORTALEZA);
@@ -625,6 +649,7 @@ void escolheProducaoIA(int ci);
 void capturaCidade(int ci, int novo) {
   Cidade & k = CID[ci];
   int antigo = k.civ;
+  k.fundada &= ~CID_AUTO;
   // ouro saqueado: uma parte do tesouro do vencido
   int saque = 0;
   int nc = contaCidades(antigo);
@@ -658,7 +683,7 @@ void capturaCidade(int ci, int novo) {
   else k.prod = UN_MILICIA;
   if (novo > 0) revela(novo, k.x, k.y, 2);
   if (antigo == jogador) mensagemEm(novo, k.x, k.y, "Os %s conquistaram %s!", nomePovo(novo), k.nome);
-  else if (novo == jogador) mensagemEm(novo, k.x, k.y, "Conquistámos %s! Saque: %d moedas.", k.nome, saque);
+  else if (novo == jogador) { mensagemEm(novo, k.x, k.y, "Conquistámos %s! Saque: %d moedas.", k.nome, saque); pedeCena(CN_CONQUISTA, ci, saque, corDe(antigo)); }
 }
 
 void destroiCidade(int ci) {

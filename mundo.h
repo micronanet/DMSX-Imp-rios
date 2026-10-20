@@ -1,5 +1,5 @@
 // =====================================================================
-// mundo.h — IMPÉRIOS: o mapa (80x50, dá a volta de este para oeste)
+// mundo.h — IMPÉRIOS: o mapa (64x40 a 112x70, dá a volta de este para oeste)
 // geração aleatória, rendimentos de cada casa, movimento e visibilidade
 // =====================================================================
 #pragma once
@@ -35,17 +35,20 @@ uint32_t rngEstado = 1;
 uint32_t aleat() { rngEstado ^= rngEstado << 13; rngEstado ^= rngEstado >> 17; rngEstado ^= rngEstado << 5; return rngEstado; }
 int aleat(int n) { return n <= 0 ? 0 : (int)(aleat() % (uint32_t)n); }
 
-// ruído suave (valores 0..255) numa grelha grossa, interpolado; dá a volta em x
+uint8_t * genA = nullptr, * genB = nullptr;   // humidade e altura (memória de trabalho do gerador)
+uint16_t * genFila = nullptr;                // fila do enchimento dos continentes
+
+// ruído suave (valores 0..255) numa grelha grossa, interpolado; dá a volta em x (qualquer tamanho de mapa)
 void ruido(uint8_t * out, int passo, uint32_t semente) {
   rngEstado = semente ? semente : 1;
-  int gw = MAPA_W / passo + 1, gh = MAPA_H / passo + 2;
-  static uint8_t g[ (80 / 2 + 1) * (50 / 2 + 2) ];
+  int gw = max(2, MAPA_W / passo), gh = MAPA_H / passo + 2;
+  static uint8_t g[(MAPA_W_MAX / 2 + 2) * (MAPA_H_MAX / 2 + 3)];
   for (int i = 0; i < gw * gh; ++i) g[i] = aleat(256);
   for (int y = 0; y < MAPA_H; ++y)
     for (int x = 0; x < MAPA_W; ++x) {
-      int gx = x / passo, gy = y / passo;
-      int fx = (x % passo) * 256 / passo, fy = (y % passo) * 256 / passo;
-      int gx2 = (gx + 1) % (MAPA_W / passo);
+      int px = x * gw * 256 / MAPA_W;
+      int gx = px >> 8, fx = px & 255, gx2 = (gx + 1) % gw;
+      int gy = y / passo, fy = (y % passo) * 256 / passo;
       int a = g[gy * gw + gx], b = g[gy * gw + gx2], c = g[(gy + 1) * gw + gx], d = g[(gy + 1) * gw + gx2];
       int top = a + ((b - a) * fx >> 8), bot = c + ((d - c) * fx >> 8);
       out[y * MAPA_W + x] = top + ((bot - top) * fy >> 8);
@@ -55,7 +58,7 @@ void ruido(uint8_t * out, int passo, uint32_t semente) {
 // marca os continentes (enchimento) e devolve quantos há
 int marcaContinentes() {
   memset(mapaCont, 0, MAPA_N);
-  static uint16_t fila[MAPA_N];
+  uint16_t * fila = genFila;
   int n = 0;
   for (int i = 0; i < MAPA_N; ++i) {
     if (mapaCont[i] || (mapaTer[i] & 15) == T_OCEANO) continue;
@@ -81,28 +84,37 @@ int tamanhoContinente(int cont) {
   return n;
 }
 
+// gera o mundo com as opções escolhidas (mundo.*); o tamanho já tem de estar posto
 void geraMundo(uint32_t semente) {
   sementeMapa = semente;
   memset(mapaTer, T_OCEANO, MAPA_N);
   memset(mapaMelh, 0, MAPA_N);
   memset(mapaVis, 0, MAPA_N);
-  static uint8_t humidade[MAPA_N], altura[MAPA_N];
+  uint8_t * humidade = genA, * altura = genB;
   ruido(humidade, 8, semente * 7 + 3);
   ruido(altura, 5, semente * 13 + 5);
   rngEstado = semente | 1;
   for (int i = 0; i < 10; ++i) aleat();
+  const int escala = MAPA_N * 100 / 4000;          // 100 = mapa normal (80x50)
 
-  // 1) terra: continentes por "passeios aleatórios" até cerca de 32% do mapa
-  int alvo = MAPA_N * 32 / 100, terra = 0;
-  int nCont = 6 + aleat(4);
-  for (int k = 0; terra < alvo && k < 400; ++k) {
+  // 1) terra: continentes por "passeios aleatórios"
+  //    massa de terra: pequena 22%, normal 32%, grande 44%
+  //    ilhas: poucas (continentes grandes), normais, muitas (arquipélagos)
+  const int pctTerra[3] = { 22, 32, 44 };
+  int alvo = MAPA_N * pctTerra[mundo.terra % 3] / 100, terra = 0;
+  int nCont = mundo.ilhas == 0 ? 3 + aleat(2) : mundo.ilhas == 1 ? 6 + aleat(4) : 14 + aleat(8);
+  nCont = max(2, nCont * escala / 100);
+  int passosMin = mundo.ilhas == 0 ? 90 : mundo.ilhas == 1 ? 40 : 12;
+  int passosVar = mundo.ilhas == 0 ? 120 : mundo.ilhas == 1 ? 80 : 30;
+  int novoCada = mundo.ilhas == 0 ? 8 : mundo.ilhas == 1 ? 3 : 1;   // de quantas em quantas se começa terra nova
+  for (int k = 0; terra < alvo && k < 400 * escala / 100 + 400; ++k) {
     int cx, cy;
-    if (k < nCont || aleat(3) == 0) { cx = aleat(MAPA_W); cy = 6 + aleat(MAPA_H - 12); }
-    else {   // continuar um continente já começado
+    if (k < nCont || aleat(novoCada + 1) == 0) { cx = aleat(MAPA_W); cy = 6 + aleat(MAPA_H - 12); }
+    else {   // continuar uma terra já começada
       int tent = 0;
       do { cx = aleat(MAPA_W); cy = 5 + aleat(MAPA_H - 10); } while (eOceano(cx, cy) && ++tent < 200);
     }
-    int passos = 40 + aleat(80);
+    int passos = passosMin + aleat(passosVar);
     for (int p = 0; p < passos; ++p) {
       for (int d = -1; d < 4; ++d) {
         int x = cx + (d == 0 ? 1 : d == 1 ? -1 : 0), y = cy + (d == 2 ? 1 : d == 3 ? -1 : 0);
@@ -131,28 +143,37 @@ void geraMundo(uint32_t semente) {
     if (aleat(3) == 0) mapaTer[idxMapa(x, 1)] = T_ARTICO;
     if (aleat(3) == 0) mapaTer[idxMapa(x, MAPA_H - 2)] = T_ARTICO;
   }
-  // 4) clima: latitude + humidade; relevo pela altura
+  // 4) clima: latitude (temperatura) + humidade (clima); relevo pela altura (idade do mundo)
+  //    temperatura: fria = o frio chega mais perto do equador; quente = o contrário
+  //    clima: árido = menos humidade (desertos); húmido = mais (selvas, florestas, pântanos)
+  //    idade: 3 mil milhões de anos = mais montanhas; 5 = mais plano e gasto
+  const int dLat[3] = { 14, 0, -14 }, dHum[3] = { -75, 0, 55 };
+  const int limMonte[3] = { 192, 205, 216 }, limColina[3] = { 166, 180, 194 };
+  int idade = mundo.idade % 3;
   for (int y = 1; y < MAPA_H - 1; ++y)
     for (int x = 0; x < MAPA_W; ++x) {
       int i = idxMapa(x, y);
       uint8_t t = mapaTer[i] & 15;
       if (t == T_OCEANO || t == T_ARTICO) continue;
       int lat = abs(y * 2 - (MAPA_H - 1)) * 100 / (MAPA_H - 1);   // 0 equador .. 100 polo
-      int h = humidade[i] + aleat(40) - 20;
+      lat = constrain(lat + dLat[mundo.temperatura % 3], 0, 100);
+      int h = humidade[i] + aleat(40) - 20 + dHum[mundo.clima % 3];
       int alt = altura[i];
       uint8_t n;
       if (lat > 88) n = (aleat(2) ? T_TUNDRA : T_ARTICO);
       else if (lat > 76) n = (h > 150 ? T_FLORESTA : T_TUNDRA);
       else if (lat > 55) n = (h > 170 ? T_FLORESTA : h > 120 ? T_PRADO : h > 60 ? T_PLANICIE : T_TUNDRA);
-      else if (lat > 25) n = (h > 190 ? T_FLORESTA : h > 150 ? T_PANTANO + 0 * 0 : h > 95 ? T_PRADO : h > 55 ? T_PLANICIE : T_DESERTO);
+      else if (lat > 25) n = (h > 190 ? T_FLORESTA : h > 150 ? T_PANTANO : h > 95 ? T_PRADO : h > 55 ? T_PLANICIE : T_DESERTO);
       else n = (h > 185 ? T_SELVA : h > 160 ? T_PANTANO : h > 115 ? T_PRADO : h > 70 ? T_PLANICIE : T_DESERTO);
       if (n == T_PANTANO && lat > 25 && aleat(2)) n = T_FLORESTA;
-      if (alt > 205) n = T_MONTANHAS;
-      else if (alt > 180) n = T_COLINAS;
+      if (alt > limMonte[idade]) n = T_MONTANHAS;
+      else if (alt > limColina[idade]) n = T_COLINAS;
       mapaTer[i] = n;
     }
-  // 5) rios: nascem nas colinas e montanhas e descem até ao mar
-  for (int r = 0; r < 26; ++r) {
+  // 5) rios: nascem nas colinas e montanhas e descem até ao mar (mais num mundo húmido)
+  const int nRios[3] = { 14, 26, 40 };
+  int rios = nRios[mundo.clima % 3] * escala / 100;
+  for (int r = 0; r < rios; ++r) {
     int x = 0, y = 0, tent = 0;
     do { x = aleat(MAPA_W); y = 3 + aleat(MAPA_H - 6); }
     while (++tent < 300 && !(terreno(x, y) == T_COLINAS || terreno(x, y) == T_MONTANHAS));
@@ -179,11 +200,14 @@ void geraMundo(uint32_t semente) {
     }
   }
   // 6) recursos especiais: espalhados num padrão regular (como no original) com um pouco de sorte
+  //    recursos: poucos (metade), normais, muitos (o dobro)
+  const int per1[3] = { 26, 13, 7 }, per2[3] = { 74, 37, 19 };
+  int rq = mundo.recursos % 3;
   for (int y = 1; y < MAPA_H - 1; ++y)
     for (int x = 0; x < MAPA_W; ++x) {
       int i = idxMapa(x, y);
       uint8_t t = mapaTer[i] & 15;
-      bool padrao = ((x + y * 3 + (semente & 7)) % 13) == 0 || ((x * 5 + y * 7 + semente) % 37) == 0;
+      bool padrao = ((x + y * 3 + (semente & 7)) % per1[rq]) == 0 || ((x * 5 + y * 7 + semente) % per2[rq]) == 0;
       if (!padrao) continue;
       if (t == T_OCEANO && !juntoAoMar(x, y)) {
         // peixe só perto de terra (onde serve a alguma cidade)
@@ -194,8 +218,8 @@ void geraMundo(uint32_t semente) {
       mapaTer[i] |= B_ESPECIAL;
     }
   // 7) aldeias tribais
-  int aldeias = 0;
-  for (int k = 0; k < 4000 && aldeias < 45; ++k) {
+  int aldeias = 0, maxAldeias = 45 * escala / 100;
+  for (int k = 0; k < 4000 && aldeias < maxAldeias; ++k) {
     int x = aleat(MAPA_W), y = 2 + aleat(MAPA_H - 4);
     uint8_t t = terreno(x, y);
     if (t == T_OCEANO || t == T_ARTICO) continue;

@@ -9,12 +9,90 @@
 Bitmap BMP_TER[N_ARTE_TERRENO], BMP_ESP[N_ARTE_ESPECIAL], BMP_ICO[N_ARTE_ICONE], BMP_CID[N_ARTE_CIDADE], BMP_UNI[N_ARTE_UNIDADE];
 enum { ICO_REGA, ICO_MINA, ICO_POLUICAO, ICO_FORTALEZA, ICO_ALDEIA, ICO_CURSOR };
 
+// os gráficos ficam na PSRAM, se houver (como nos outros jogos FabGL); senão usam-se da flash
+const uint8_t * copiaArte(const uint8_t * dados, size_t n) {
+  if (!psramFound()) return dados;
+  uint8_t * p = (uint8_t *) ps_malloc(n);
+  if (!p) return dados;
+  memcpy(p, dados, n);
+  return p;
+}
 void preparaArte() {
-  for (int i = 0; i < N_ARTE_TERRENO; ++i) BMP_TER[i] = Bitmap(TILE_W, TILE_H, arte_terreno[i], PixelFormat::RGBA2222);
-  for (int i = 0; i < N_ARTE_ESPECIAL; ++i) BMP_ESP[i] = Bitmap(TILE_W, TILE_H, arte_especial[i], PixelFormat::RGBA2222);
-  for (int i = 0; i < N_ARTE_ICONE; ++i) BMP_ICO[i] = Bitmap(TILE_W, TILE_H, arte_icone[i], PixelFormat::RGBA2222);
-  for (int i = 0; i < N_ARTE_CIDADE; ++i) BMP_CID[i] = Bitmap(TILE_W, TILE_H, arte_cidade[i], PixelFormat::RGBA2222);
-  for (int i = 0; i < N_ARTE_UNIDADE; ++i) BMP_UNI[i] = Bitmap(TILE_W, TILE_H, arte_unidade[i], PixelFormat::RGBA2222);
+  const size_t T = TILE_W * TILE_H;
+  for (int i = 0; i < N_ARTE_TERRENO; ++i)  BMP_TER[i] = Bitmap(TILE_W, TILE_H, copiaArte(arte_terreno[i], T), PixelFormat::RGBA2222);
+  for (int i = 0; i < N_ARTE_ESPECIAL; ++i) BMP_ESP[i] = Bitmap(TILE_W, TILE_H, copiaArte(arte_especial[i], T), PixelFormat::RGBA2222);
+  for (int i = 0; i < N_ARTE_ICONE; ++i)    BMP_ICO[i] = Bitmap(TILE_W, TILE_H, copiaArte(arte_icone[i], T), PixelFormat::RGBA2222);
+  for (int i = 0; i < N_ARTE_CIDADE; ++i)   BMP_CID[i] = Bitmap(TILE_W, TILE_H, copiaArte(arte_cidade[i], T), PixelFormat::RGBA2222);
+  for (int i = 0; i < N_ARTE_UNIDADE; ++i)  BMP_UNI[i] = Bitmap(TILE_W, TILE_H, copiaArte(arte_unidade[i], T), PixelFormat::RGBA2222);
+  void preparaFranjas(); preparaFranjas();
+}
+// retrato de um líder: copiado para a PSRAM só quando é preciso (cada um tem 13 KB)
+const uint8_t * dadosRetrato(int k) {
+  static uint8_t * buf = nullptr;
+  static int carregado = -1;
+  if (!psramFound()) return arte_retrato[k];
+  if (!buf) buf = (uint8_t *) ps_malloc(RETRATO_W * RETRATO_H);
+  if (!buf) return arte_retrato[k];
+  if (carregado != k) { memcpy(buf, arte_retrato[k], RETRATO_W * RETRATO_H); carregado = k; }
+  return buf;
+}
+
+// ---------------- transições suaves entre terrenos ----------------
+// Para cada cor de fundo de terreno e cada lado da casa há uma franja transparente com pontos dessa cor,
+// densa junto à borda e cada vez mais rala para dentro. Ao desenhar uma casa, põe-se por cima, em cada
+// lado, a franja do terreno vizinho (se for diferente): as fronteiras ficam esbatidas.
+const int FR_L = 9, FR_A = 4;                 // largura da franja dos lados (píxeis) e altura da de cima/baixo
+uint8_t corFundoTerreno(int t) {              // RGBA2222 (AABBGGRR) da cor de fundo de cada terreno
+  switch (t) {
+    case T_PRADO: case T_RIO: return 0xC0 | (0 << 4) | (2 << 2) | 0;
+    case T_PLANICIE: case T_COLINAS: case T_MONTANHAS: return 0xC0 | (1 << 4) | (2 << 2) | 2;
+    case T_DESERTO: return 0xC0 | (1 << 4) | (3 << 2) | 3;
+    case T_TUNDRA: return 0xC0 | (2 << 4) | (2 << 2) | 2;
+    case T_ARTICO: return 0xC0 | (3 << 4) | (3 << 2) | 3;
+    case T_FLORESTA: case T_SELVA: return 0xC0 | (0 << 4) | (1 << 2) | 0;
+    case T_PANTANO: return 0xC0 | (1 << 4) | (1 << 2) | 0;
+  }
+  return 0;
+}
+Bitmap BMP_FRANJA[N_TERRENOS][4];             // 0 cima, 1 direita, 2 baixo, 3 esquerda
+void preparaFranjas() {
+  for (int t = 0; t < N_TERRENOS; ++t) {
+    uint8_t c = corFundoTerreno(t);
+    if (!c) continue;
+    for (int lado = 0; lado < 4; ++lado) {
+      bool vert = lado == 1 || lado == 3;
+      int w = vert ? FR_L : TILE_W, h = vert ? TILE_H : FR_A;
+      uint8_t * d = (uint8_t *) reserva(w * h);
+      if (!d) continue;
+      for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+          int dist = lado == 0 ? y : lado == 2 ? h - 1 - y : lado == 3 ? x : w - 1 - x;   // distância à borda
+          int n = vert ? FR_L : FR_A;
+          uint32_t r = (uint32_t)(x * 73856093u ^ y * 19349663u ^ (t * 83492791u) ^ lado * 2654435761u);
+          r ^= r >> 13; r *= 0x5bd1e995; r ^= r >> 15;
+          int q = n - dist; int dens = 88 * q * q / (n * n);   // % de pontos: ~88% na borda, a cair depressa para dentro
+          // os cantos ficam mais ralos (para as franjas de dois lados não se somarem)
+          int canto = vert ? min(y, h - 1 - y) : min(x, w - 1 - x);
+          if (canto < 2) dens /= 2;
+          d[y * w + x] = ((int)(r % 100) < dens) ? c : 0;
+        }
+      BMP_FRANJA[t][lado] = Bitmap(w, h, d, PixelFormat::RGBA2222);
+    }
+  }
+}
+void esbateBordas(int sx, int sy, int x, int y, int t) {
+  const uint8_t eu = corFundoTerreno(t);
+  const int dx[4] = { 0, 1, 0, -1 }, dy[4] = { -1, 0, 1, 0 };
+  for (int lado = 0; lado < 4; ++lado) {
+    int ny = y + dy[lado];
+    if (!dentroY(ny) || !viu(jogador, x + dx[lado], ny)) continue;
+    int v = terreno(x + dx[lado], ny);
+    if (v == T_OCEANO) continue;
+    uint8_t c = corFundoTerreno(v);
+    if (!c || c == eu) continue;
+    int px = sx + (lado == 1 ? TILE_W - FR_L : 0), py = sy + (lado == 2 ? TILE_H - FR_A : 0);
+    canvas.drawBitmap(px, py, &BMP_FRANJA[v][lado]);
+  }
 }
 
 // ---------------- disposição ----------------
@@ -80,10 +158,15 @@ void desenhaUnidade(int sx, int sy, int i, int nNaCasa) {
     canvas.setPenColor(C_PRETO);
     canvas.drawRectangle(sx + 3, sy + 2, x1, y1);
   }
-  canvas.setBrushColor(corCiv(cor));
+  // placa na cor do povo, com relevo: luz em cima e à esquerda, sombra em baixo e à direita
+  const RGB888 cc = corCiv(cor), ce = corCivE(cor);
+  const RGB888 cl(min(255, cc.R + 85), min(255, cc.G + 85), min(255, cc.B + 85));
+  canvas.setBrushColor(cc);
   canvas.fillRectangle(sx + 1, sy + 1, x1 - 2, y1 - 1);
-  canvas.setPenColor(corCivE(cor));
-  canvas.drawRectangle(sx + 1, sy + 1, x1 - 2, y1 - 1);
+  canvas.setPenColor(cl);
+  canvas.drawLine(sx + 1, sy + 1, x1 - 2, sy + 1); canvas.drawLine(sx + 1, sy + 1, sx + 1, y1 - 1);
+  canvas.setPenColor(ce);
+  canvas.drawLine(sx + 1, y1 - 1, x1 - 2, y1 - 1); canvas.drawLine(x1 - 2, sy + 1, x1 - 2, y1 - 1);
   canvas.drawBitmap(sx, sy, &BMP_UNI[u.tipo]);
   // letra do estado num quadrado preto no canto de cima, à esquerda
   char l = 0;
@@ -144,6 +227,7 @@ void desenhaCasa(int sx, int sy, int x, int y, bool comUnidade) {
   }
   uint8_t t = terreno(x, y);
   canvas.drawBitmap(sx, sy, &BMP_TER[t]);
+  if (t != T_OCEANO) esbateBordas(sx, sy, x, y, t);
   const int cx = sx + TILE_W / 2 - 1, cy = sy + TILE_H / 2 - 1;
   const int mx = TILE_W / 2, my = TILE_H / 2;          // do centro até ao lado
   if (t == T_OCEANO) {
@@ -307,33 +391,42 @@ RGB888 corMinimapa(uint8_t t) {
   }
   return C_PRETO;
 }
-void desenhaMinimapa() {
+// desenha o mundo inteiro reduzido ao retângulo (x0, y0, w, h); comVisao: só o que o jogador já viu
+void desenhaMundoPequeno(int x0, int y0, int w, int h, bool comVisao) {
   for (int y = 0; y < MAPA_H; ++y) {
+    int sy0 = y0 + y * h / MAPA_H, sy1 = y0 + (y + 1) * h / MAPA_H - 1;
+    if (sy1 < sy0) continue;                        // mapa maior do que o retângulo: salta linhas
     int x = 0;
     while (x < MAPA_W) {
-      // junta casas seguidas com a mesma cor
-      bool v = viu(jogador, x, y);
+      bool v = !comVisao || viu(jogador, x, y);
       uint8_t t = terreno(x, y);
       int x2 = x + 1;
-      while (x2 < MAPA_W && viu(jogador, x2, y) == v && (!v || terreno(x2, y) == t)) ++x2;
-      canvas.setBrushColor(v ? corMinimapa(t) : C_PRETO);
-      canvas.fillRectangle(PX + x * 2, y, PX + x2 * 2 - 1, y);
+      while (x2 < MAPA_W && (!comVisao || viu(jogador, x2, y) == v) && (!v || terreno(x2, y) == t)) ++x2;
+      int sx0 = x0 + x * w / MAPA_W, sx1 = x0 + x2 * w / MAPA_W - 1;
+      if (sx1 >= sx0) { canvas.setBrushColor(v ? corMinimapa(t) : C_PRETO); canvas.fillRectangle(sx0, sy0, sx1, sy1); }
       x = x2;
     }
   }
+}
+// minimapa no canto de cima do painel (160x50), à escala do mapa
+const int MINI_W = 160, MINI_H = 50;
+inline int miniX(int x) { return PX + x * MINI_W / MAPA_W; }
+inline int miniY(int y) { return y * MINI_H / MAPA_H; }
+void desenhaMinimapa() {
+  desenhaMundoPequeno(PX, 0, MINI_W, MINI_H, true);
   for (int i = 0; i < MAX_CIDADES; ++i) {
     const Cidade & k = CID[i];
     if (!k.viva || !viu(jogador, k.x, k.y)) continue;
     canvas.setBrushColor(corCiv(corDe(k.civ)));
-    canvas.fillRectangle(PX + k.x * 2, k.y, PX + k.x * 2 + 1, k.y);
+    canvas.fillRectangle(miniX(k.x), miniY(k.y), miniX(k.x) + 1, miniY(k.y));
   }
-  // retângulo da vista
+  // retângulo da vista (dá a volta ao mundo pela direita)
   canvas.setPenColor(C_BRANCO);
-  int x0 = PX + camX * 2, x1 = x0 + VIEW_W * 2 - 1, y0 = camY, y1 = camY + VIEW_H - 1;
-  if (x1 < PX + 160) canvas.drawRectangle(x0, y0, x1, y1);
+  int x0 = miniX(camX), x1 = PX + (camX + VIEW_W) * MINI_W / MAPA_W - 1, y0 = miniY(camY), y1 = (camY + VIEW_H) * MINI_H / MAPA_H - 1;
+  if (x1 < PX + MINI_W) canvas.drawRectangle(x0, y0, x1, y1);
   else {
-    canvas.drawLine(x0, y0, PX + 159, y0); canvas.drawLine(x0, y1, PX + 159, y1); canvas.drawLine(x0, y0, x0, y1);
-    int xr = x1 - 160;
+    canvas.drawLine(x0, y0, PX + MINI_W - 1, y0); canvas.drawLine(x0, y1, PX + MINI_W - 1, y1); canvas.drawLine(x0, y0, x0, y1);
+    int xr = x1 - MINI_W;
     canvas.drawLine(PX, y0, xr, y0); canvas.drawLine(PX, y1, xr, y1); canvas.drawLine(xr, y0, xr, y1);
   }
 }
@@ -460,9 +553,11 @@ char ajudaLista[96] = "";
 int idLista = 0;                 // o que a lista está a escolher (ver jogo.h)
 int listaX0 = 60, listaW = 360, listaLinhas = 15;
 int listaY0 = -1;                // -1 = ao meio do ecrã
+bool listaAltura = false;        // true: a caixa tem sempre listaLinhas de altura
+void (*extraLista)() = nullptr;  // desenho extra por cima/ao lado da lista (ex.: painel da produção)
 
 void limpaLista(const char * titulo, int id) {
-  nItens = 0; itemSel = 0; itemTopo = 0; idLista = id; listaY0 = -1;
+  nItens = 0; itemSel = 0; itemTopo = 0; idLista = id; listaY0 = -1; extraLista = nullptr; listaAltura = false;
   strncpy(tituloLista, titulo, sizeof(tituloLista) - 1); tituloLista[sizeof(tituloLista) - 1] = 0;
   ajudaLista[0] = 0;
 }
@@ -476,8 +571,9 @@ void juntaItem(const char * t, int valor, bool ativo = true, const char * dir = 
 
 void desenhaLista() {
   int linhas = min(nItens, listaLinhas);
+  int linhasCaixa = listaAltura ? listaLinhas : linhas;
   int topo = tituloLista[0] ? 15 : 5;             // sem título, a lista começa logo
-  int h = linhas * 10 + topo + 5 + (ajudaLista[0] ? 10 : 0);
+  int h = linhasCaixa * 10 + topo + 5 + (ajudaLista[0] ? 10 : 0);
   int x0 = listaX0, x1 = listaX0 + listaW;
   int y0 = listaY0 >= 0 ? listaY0 : max(1, (ECRA_H - h) / 2 - 4);
   caixa(x0, y0, x1, y0 + h, C_PAINEL, C_MOLDURA);
@@ -498,6 +594,7 @@ void desenhaLista() {
   if (itemTopo > 0) texto(x1 - 12, y0 + 4, "^", C_CINZA);
   if (itemTopo + linhas < nItens) texto(x1 - 12, y0 + h - 10, "v", C_CINZA);
   if (ajudaLista[0]) texto(x0 + 8, y0 + h - 10, ajudaLista, C_CINZA);
+  if (extraLista) extraLista();
 }
 
 // devolve: -1 nada; -2 cancelou; >= 0 índice escolhido

@@ -124,6 +124,29 @@ const Nota MUS_DERROTA[] = {
   {69,6},{68,2},{69,4},{64,4}, {65,6},{64,2},{62,8}, {64,6},{62,2},{60,4},{59,4}, {57,16} };
 const Nota BAI_DERROTA[] = { {45,16},{38,16},{40,16},{33,16} };
 
+// músicas para durante o jogo, uma por época (melodias originais)
+const Nota MUS_ANTIGA[] = {     // modo dórico, lenta, sobre um bordão
+  {62,4},{65,4},{67,8},{69,4},{67,4},{65,4},{62,8},{0,4},
+  {60,4},{62,4},{65,8},{67,4},{65,2},{64,2},{62,12},{0,4},
+  {69,4},{70,4},{72,8},{70,4},{69,4},{67,8},
+  {65,4},{67,4},{69,4},{65,4},{62,16},{0,8} };
+const Nota BAI_ANTIGA[] = { {38,16},{38,16},{36,16},{38,16},{41,16},{43,16},{38,16},{38,16} };
+const Nota MUS_MEDIEVAL[] = {   // dança medieval (mixolídio)
+  {67,2},{69,2},{71,4},{72,2},{71,2},{69,4},{67,4},{65,4},{67,8},{0,2},
+  {71,2},{72,2},{74,4},{72,2},{71,2},{69,4},{71,4},{67,4},{69,8},{0,2},
+  {74,4},{72,2},{71,2},{72,4},{69,4},{71,2},{69,2},{67,4},{65,4},{67,12},{0,4} };
+const Nota BAI_MEDIEVAL[] = { {43,8},{41,8},{43,8},{38,8},{43,8},{41,8},{43,8},{43,8} };
+const Nota MUS_CLASSICA[] = {   // minueto
+  {72,4},{76,2},{79,2},{84,4},{79,4},{77,4},{76,2},{74,2},{72,8},
+  {74,4},{77,2},{81,2},{79,4},{77,4},{76,4},{74,4},{76,8},
+  {72,4},{76,2},{79,2},{81,4},{77,4},{76,4},{74,4},{72,4},{71,4},{72,12},{0,4} };
+const Nota BAI_CLASSICA[] = { {48,8},{55,8},{53,8},{48,8},{50,8},{55,8},{48,8},{43,8},{48,8},{53,8},{48,8},{55,8},{48,12},{0,4} };
+const Nota MUS_MODERNA[] = {    // marcha
+  {67,3},{67,1},{72,4},{74,4},{76,6},{74,2},{72,4},{79,8},{0,4},
+  {77,3},{76,1},{74,4},{72,4},{74,6},{76,2},{71,4},{67,8},{0,4},
+  {72,4},{76,4},{79,4},{84,4},{83,4},{81,4},{79,8},{77,4},{74,4},{71,4},{72,12},{0,4} };
+const Nota BAI_MODERNA[] = { {48,4},{55,4},{48,4},{55,4},{53,4},{60,4},{55,4},{43,4} };
+
 SquareWaveformGenerator   vozMelodia;
 TriangleWaveformGenerator vozBaixo;
 const Nota * musM = nullptr; int musMn = 0, musMi = 0; uint32_t musMfim = 0;
@@ -150,11 +173,43 @@ void paraMusica() {
   vozBaixo.enable(false);
 }
 
+#define TOCA(m, b, u, r) tocaMusica(m, sizeof(m) / sizeof(Nota), b, sizeof(b) / sizeof(Nota), u, r)
+
+// ---- a música vai mudando: uma melodia (às vezes repetida uma vez), depois um silêncio ----
+// noTitulo: no ecrã do título toca a música do título, com pausas curtas.
+// Durante o jogo escolhe a melodia da época (pelo número de tecnologias), às vezes a de outra época.
+bool noTitulo = true;
+int  epocaMusical = 0;              // 0 antiguidade .. 3 moderna (posta pelo jogo)
+uint32_t proximaMusica = 0;
+int  ultimaFaixa = -1;
+void escolheFaixa() {
+  int f;
+  if (noTitulo) f = 4;
+  else {
+    f = epocaMusical;
+    if (random(100) < 30) f = constrain(f + (random(2) ? 1 : -1), 0, 3);   // de vez em quando, outra
+    if (f == ultimaFaixa && random(100) < 50) f = (f + 1 + random(3)) % 4;
+  }
+  ultimaFaixa = f;
+  switch (f) {
+    case 0: TOCA(MUS_ANTIGA, BAI_ANTIGA, 150, false); break;
+    case 1: TOCA(MUS_MEDIEVAL, BAI_MEDIEVAL, 115, false); break;
+    case 2: TOCA(MUS_CLASSICA, BAI_CLASSICA, 105, false); break;
+    case 3: TOCA(MUS_MODERNA, BAI_MODERNA, 100, false); break;
+    default: TOCA(MUS_TITULO, BAI_TITULO, 120, false); break;
+  }
+}
 void atualizaMusica(uint32_t agora) {
-  if (!musicaLigada || !musicaPermitida) { vozMelodia.enable(false); vozBaixo.enable(false); return; }
+  if (!musicaPermitida) { vozMelodia.enable(false); vozBaixo.enable(false); return; }
+  if (!musicaLigada) {
+    // silêncio entre músicas: 6 a 10 s no título, 25 a 70 s durante o jogo
+    if (proximaMusica == 0) proximaMusica = agora + (noTitulo ? 6000 + random(4000) : 25000 + random(45000));
+    if ((int32_t)(agora - proximaMusica) >= 0) { proximaMusica = 0; escolheFaixa(); }
+    return;
+  }
   if ((int32_t)(agora - musMfim) >= 0) {
     if (musMi >= musMn) {
-      if (!musicaRepete) { paraMusica(); return; }
+      if (!musicaRepete) { paraMusica(); proximaMusica = 0; return; }
       musMi = 0;
     }
     const Nota & n = musM[musMi];
@@ -173,7 +228,6 @@ void atualizaMusica(uint32_t agora) {
   }
 }
 
-#define TOCA(m, b, u, r) tocaMusica(m, sizeof(m) / sizeof(Nota), b, sizeof(b) / sizeof(Nota), u, r)
 
 // =====================================================================
 // TEXTO: fonte 8x8 da FabGL com ã e õ acrescentados; os textos estão em

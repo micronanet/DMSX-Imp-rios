@@ -4,30 +4,69 @@
 // =====================================================================
 #pragma once
 
-enum Modo : uint8_t { M_TITULO, M_LISTA, M_MAPA, M_MENSAGEM, M_PERGUNTA, M_CIDADE, M_RELATORIO, M_DESTINO, M_TAXAS, M_FIM, M_ESPERA, M_ENCONTRO };
+enum Modo : uint8_t { M_TITULO, M_LISTA, M_MAPA, M_MENSAGEM, M_PERGUNTA, M_CIDADE, M_RELATORIO, M_DESTINO, M_TAXAS, M_FIM, M_ESPERA, M_ENCONTRO, M_DESCOBERTA, M_ATAQUE, M_NOME, M_MUNDO, M_CENA };
 Modo modo = M_TITULO;
 uint32_t tempo = 0, frame = 0;
 void entraModo(Modo m) { modo = m; tempo = 0; }
 
 // o que cada lista está a escolher
 enum IdLista : uint8_t { L_TITULO, L_DIFICULDADE, L_NCIVS, L_POVO, L_PRODUCAO, L_PESQUISA, L_ORDENS, L_MENU,
-                         L_GOVERNO, L_CIDADES, L_DIPLOMATA, L_CARAVANA, L_OPCOES_CIDADE, L_DIPLOMACIA, L_DIPLO_ACAO, L_VENDER, L_UNID_CIDADE };
+                         L_GOVERNO, L_CIDADES, L_DIPLOMATA, L_CARAVANA, L_OPCOES_CIDADE, L_DIPLOMACIA, L_DIPLO_ACAO, L_VENDER, L_UNID_CIDADE, L_ALVOS, L_IR_CIDADE, L_GRAVAR, L_CARREGAR, L_DORMIR };
 Modo modoAntesLista = M_MAPA;
+bool podeMarchar(int i);
+void abreAlvos();
+void abreAtaque(int i, int ci);
+void abreGravar();
+void abreCarregar();
+void abreNome();
+void abreNomeCidade(int ci);
+void abreDormir();
+void abreMundo();
+void abreCena(int tipo, int a, int c, int b);   // cenas.h
+uint32_t sementeEscolhida = 1;
+// unidades que chegaram junto de uma cidade inimiga (marcha com a tecla A)
+const int MAX_CHEGADAS = 8;
+int chegouUnid[MAX_CHEGADAS], chegouCid[MAX_CHEGADAS], nChegadas = 0;
+
 int cidadeAtual = -1;             // cidade aberta (ecrã da cidade) ou a escolher produção
 int alvoX = 0, alvoY = 0;          // diplomata/caravana: a cidade onde entrou
 int civDiplomacia = 0;
 
 // ---------------- gravação no cartão SD ----------------
-const char * FICHEIRO = "/imperios.sav";
-const uint32_t MAGICO = 0x31504D49;    // "IMP1"
+// ---------------- gravações no cartão SD (10 posições, como no original) ----------------
+// cada gravação tem um cabeçalho com o nome do jogador, o povo, o ano e a dificuldade
+const int N_GRAVACOES = 10;
+const int GRAV_AUTO = -1, GRAV_ANTIGA = N_GRAVACOES;     // gravação automática; ficheiro da versão anterior
+const uint32_t MAGICO = 0x31504D49;    // "IMP1": versão anterior, sem cabeçalho
+const uint32_t MAGICO2 = 0x32504D49;   // "IMP2": com cabeçalho (mapa 80x50)
+const uint32_t MAGICO3 = 0x33504D49;   // "IMP3": cabeçalho com o tamanho do mapa e as opções do mundo
 bool temSD = false;
+char nomeJogador[24] = "";
+bool verInimigos = false;              // opção: mostrar os movimentos das unidades dos outros povos que estão à vista
+int ultimaGravacao = -1;               // F10 grava na mesma posição
+struct Cabecalho { char nome[24]; uint8_t povo, dificuldade, nCivs, livre; int32_t turno; };
+struct Cabecalho3 { uint8_t mapaW, mapaH; OpcoesMundo mundo; };
 
-bool gravaJogo() {
-  if (!temSD) return false;
-  File f = SD.open(FICHEIRO, FILE_WRITE);
-  if (!f) return false;
-  uint32_t m = MAGICO;
-  f.write((uint8_t *)&m, 4);
+const char * nomeLider(int c) { return (c == jogador && nomeJogador[0]) ? nomeJogador : POVO[CIV[c].povo].lider; }
+void nomeFicheiro(char * b, int k) {
+  if (k == GRAV_AUTO) strcpy(b, "/impauto.sav");
+  else if (k == GRAV_ANTIGA) strcpy(b, "/imperios.sav");
+  else sprintf(b, "/imperio%d.sav", k);
+}
+
+// monta o cartão SD (no seu SPI próprio, HSPI); se falhar, volta a tentar da próxima vez que for preciso
+bool montaSD() {
+  if (temSD) return true;
+  static bool spiPronto = false;
+  if (!spiPronto) { spiSD.begin(14, 2, 12, 13); spiPronto = true; }
+  // só 2 ficheiros abertos de cada vez: gasta menos RAM interna (o VGA a 640x200 já ocupa 128 KB)
+  temSD = SD.begin(13, spiSD, 4000000, "/sd", 2);
+  Serial.printf("IMPERIOS: cartao SD %s (RAM interna livre %u, maior bloco %u)\n", temSD ? "montado" : "NAO montado",
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  return temSD;
+}
+
+void escreveDados(File & f) {
   f.write((uint8_t *)&turno, sizeof(turno));
   f.write(&jogador, 1); f.write(&dificuldade, 1); f.write(&nCivsJogo, 1); f.write(&fimDeJogo, 1);
   f.write((uint8_t *)&sementeMapa, sizeof(sementeMapa));
@@ -37,27 +76,8 @@ bool gravaJogo() {
   f.write(mapaTer, MAPA_N); f.write(mapaMelh, MAPA_N); f.write(mapaVis, MAPA_N); f.write(mapaCont, MAPA_N);
   f.write((uint8_t *)U, sizeof(Unidade) * MAX_UNIDADES);
   f.write((uint8_t *)CID, sizeof(Cidade) * MAX_CIDADES);
-  f.close();
-  return true;
 }
-
-bool haJogoGravado() {
-  if (!temSD) return false;
-  File f = SD.open(FICHEIRO, FILE_READ);
-  if (!f) return false;
-  uint32_t m = 0;
-  f.read((uint8_t *)&m, 4);
-  f.close();
-  return m == MAGICO;
-}
-
-bool carregaJogo() {
-  if (!temSD) return false;
-  File f = SD.open(FICHEIRO, FILE_READ);
-  if (!f) return false;
-  uint32_t m = 0;
-  f.read((uint8_t *)&m, 4);
-  if (m != MAGICO) { f.close(); return false; }
+void leDados(File & f) {
   f.read((uint8_t *)&turno, sizeof(turno));
   f.read(&jogador, 1); f.read(&dificuldade, 1); f.read(&nCivsJogo, 1); f.read(&fimDeJogo, 1);
   f.read((uint8_t *)&sementeMapa, sizeof(sementeMapa));
@@ -67,9 +87,90 @@ bool carregaJogo() {
   f.read(mapaTer, MAPA_N); f.read(mapaMelh, MAPA_N); f.read(mapaVis, MAPA_N); f.read(mapaCont, MAPA_N);
   f.read((uint8_t *)U, sizeof(Unidade) * MAX_UNIDADES);
   f.read((uint8_t *)CID, sizeof(Cidade) * MAX_CIDADES);
+}
+
+bool gravaJogo(int k) {
+  if (!montaSD()) return false;
+  char nf[20]; nomeFicheiro(nf, k);
+  File f = SD.open(nf, FILE_WRITE);
+  if (!f) return false;
+  uint32_t m = MAGICO3;
+  f.write((uint8_t *)&m, 4);
+  Cabecalho c; memset(&c, 0, sizeof(c));
+  snprintf(c.nome, sizeof(c.nome), "%s", nomeLider(jogador));
+  c.povo = CIV[jogador].povo; c.dificuldade = dificuldade; c.nCivs = nCivsJogo; c.turno = turno;
+  c.livre = verInimigos ? 1 : 0;                  // opções do jogador (bit 0: ver os movimentos dos outros)
+  f.write((uint8_t *)&c, sizeof(c));
+  Cabecalho3 c3 = { (uint8_t)MAPA_W, (uint8_t)MAPA_H, mundo };
+  f.write((uint8_t *)&c3, sizeof(c3));
+  escreveDados(f);
   f.close();
+  if (k != GRAV_AUTO) ultimaGravacao = k;
+  return true;
+}
+
+// lê só o cabeçalho (para as listas de gravações)
+bool leCabecalho(int k, Cabecalho & c) {
+  if (!montaSD()) return false;
+  char nf[20]; nomeFicheiro(nf, k);
+  if (!SD.exists(nf)) return false;
+  File f = SD.open(nf, FILE_READ);
+  if (!f) return false;
+  uint32_t m = 0;
+  f.read((uint8_t *)&m, 4);
+  bool ok = true;
+  if (m == MAGICO2 || m == MAGICO3) f.read((uint8_t *)&c, sizeof(c));
+  else if (m == MAGICO) {
+    // versão anterior: tira o que puder dos dados
+    memset(&c, 0, sizeof(c));
+    uint8_t jog = 0;
+    f.read((uint8_t *)&c.turno, sizeof(turno));
+    f.read(&jog, 1); f.read(&c.dificuldade, 1); f.read(&c.nCivs, 1);
+    size_t civ0 = 4 + sizeof(turno) + 4 + sizeof(sementeMapa) + sizeof(maravilhaCidade) + sizeof(tecDescoberta);
+    f.seek(civ0 + jog * sizeof(Civ) + offsetof(Civ, povo));
+    f.read(&c.povo, 1);
+    if (c.povo >= N_POVOS) c.povo = 0;
+    memcpy(c.nome, POVO[c.povo].lider, min(sizeof(c.nome) - 1, strlen(POVO[c.povo].lider))); c.nome[sizeof(c.nome) - 1] = 0;
+  } else ok = false;
+  f.close();
+  return ok;
+}
+
+bool haJogoGravado() {
+  Cabecalho c;
+  for (int k = GRAV_AUTO; k <= GRAV_ANTIGA; ++k) if (leCabecalho(k, c)) return true;
+  return false;
+}
+
+bool carregaJogo(int k) {
+  if (!montaSD()) return false;
+  char nf[20]; nomeFicheiro(nf, k);
+  File f = SD.open(nf, FILE_READ);
+  if (!f) return false;
+  uint32_t m = 0;
+  f.read((uint8_t *)&m, 4);
+  Cabecalho c; memset(&c, 0, sizeof(c));
+  Cabecalho3 c3 = { 80, 50, { 1, 1, 1, 1, 1, 1, 1 } };     // as versões anteriores eram sempre 80x50
+  if (m == MAGICO2 || m == MAGICO3) f.read((uint8_t *)&c, sizeof(c));
+  else if (m != MAGICO) { f.close(); return false; }
+  if (m == MAGICO3) f.read((uint8_t *)&c3, sizeof(c3));
+  if (c3.mapaW < 16 || c3.mapaW > MAPA_W_MAX || c3.mapaH < 16 || c3.mapaH > MAPA_H_MAX) { f.close(); return false; }
+  poeTamanhoMapa(c3.mapaW, c3.mapaH);
+  mundo = c3.mundo;
+  leDados(f);
+  f.close();
+  strncpy(nomeJogador, c.nome, sizeof(nomeJogador) - 1); nomeJogador[sizeof(nomeJogador) - 1] = 0;
+  verInimigos = c.livre & 1;
+  ultimaGravacao = (k >= 0 && k < N_GRAVACOES) ? k : -1;
   rngEstado = millis() | 1;
   return true;
+}
+
+// texto de uma gravação: "Fernando (Portugueses)" e, à direita, o ano
+void descreveGravacao(const Cabecalho & c, char * t, int nt, char * dir, int nd) {
+  snprintf(t, nt, "%s (%s)", c.nome, POVO[c.povo % N_POVOS].nome);
+  char ano[24]; textoAno(ano, c.turno);
+  snprintf(dir, nd, "%s", ano);
 }
 
 // ---------------- jogo novo ----------------
@@ -86,13 +187,13 @@ bool sitioInicial(int x, int y) {
 }
 
 void novoJogo() {
-  geraMundo(millis() * 2654435761UL + 12345);
+  geraMundo(sementeEscolhida);          // o mesmo mundo que se viu no ecrã "Criar o mundo"
   memset(U, 0, sizeof(Unidade) * MAX_UNIDADES);
   memset(CID, 0, sizeof(Cidade) * MAX_CIDADES);
   memset(CIV, 0, sizeof(CIV));
   memset(tecDescoberta, 0, sizeof(tecDescoberta));
   for (int w = 0; w < N_MARAVILHAS; ++w) maravilhaCidade[w] = -1;
-  turno = 0; fimDeJogo = 0; nMsg = 0; nPedeProducao = 0; proposta = PR_NADA; encontrosPendentes = 0;
+  turno = 0; fimDeJogo = 0; nMsg = 0; nPedeProducao = 0; proposta = PR_NADA; encontrosPendentes = 0; nTecsNovas = 0; nChegadas = 0; nCenas = 0;
   jogador = POVO[povoEscolhido].cor;
   // os outros povos: cores ao acaso, um povo de cada cor
   uint8_t usados = 1 << jogador;
@@ -160,16 +261,42 @@ void proximaUnidade() {
   ativa = -1;
 }
 
+// unidades que chegaram junto de uma cidade inimiga (marcha com a tecla A) e esperam a ordem de ataque
+void registaChegada(int i, int ci) {
+  for (int k = 0; k < nChegadas; ++k) if (chegouUnid[k] == i) { chegouCid[k] = ci; return; }
+  if (nChegadas < MAX_CHEGADAS) { chegouUnid[nChegadas] = i; chegouCid[nChegadas] = ci; ++nChegadas; }
+}
+void tiraChegada(int k) { --nChegadas; for (int j = k; j < nChegadas; ++j) { chegouUnid[j] = chegouUnid[j + 1]; chegouCid[j] = chegouCid[j + 1]; } }
+// direção de (x, y) para a casa vizinha (tx, ty); -1 se não for vizinha
+int direcaoPara(int x, int y, int tx, int ty) {
+  for (int d = 0; d < 8; ++d) if (embrulhaX(x + DIR_DX[d]) == tx && y + DIR_DY[d] == ty) return d;
+  return -1;
+}
+
 // segue o destino (ordem "ir para")
 void segueDestino(int i) {
   Unidade & u = U[i];
   for (int s = 0; s < 12 && u.viva && u.mov > 0; ++s) {
     if (u.x == u.gx && u.y == u.gy) { u.estado = EU_NADA; u.gx = SEM; return; }
+    // marcha contra uma cidade estrangeira: pára na casa ao lado e pergunta se ataca
+    int ca = cidadeEm(u.gx, u.gy);
+    if (ca >= 0 && CID[ca].civ != u.civ && direcaoPara(u.x, u.y, u.gx, u.gy) >= 0) {
+      u.estado = EU_NADA; u.gx = SEM;
+      if (u.civ == jogador) registaChegada(i, ca);
+      return;
+    }
     ResMov r = passoPara(i, u.gx, u.gy, false);
     if (r != MV_OK && r != MV_EMBARCOU) { u.estado = EU_NADA; u.gx = SEM; return; }
     u.estado = EU_DESTINO;
   }
   if (u.viva && u.x == u.gx && u.y == u.gy) { u.estado = EU_NADA; u.gx = SEM; }
+  if (u.viva && u.gx != SEM) {
+    int ca = cidadeEm(u.gx, u.gy);
+    if (ca >= 0 && CID[ca].civ != u.civ && direcaoPara(u.x, u.y, u.gx, u.gy) >= 0) {
+      u.estado = EU_NADA; u.gx = SEM;
+      if (u.civ == jogador) registaChegada(i, ca);
+    }
+  }
 }
 
 // ---------------- mensagens ----------------
@@ -227,6 +354,62 @@ void pergunta(IdPergunta id, const char * fmt, ...) {
 // ---------------- listas: produção, pesquisa, ordens, menus ----------------
 int turnosPara(int falta, int porTurno) { if (porTurno <= 0) return 99; return (falta + porTurno - 1) / porTurno; }
 
+// painel à direita da lista de produção: quem defende a cidade e os edifícios que já tem
+void painelProducao() {
+  const int ci = cidadeAtual;
+  if (ci < 0) return;
+  const Cidade & k = CID[ci];
+  char b[64];
+  const int x0 = 396, x1 = ECRA_W - 5, y0 = 1, y1 = 181;
+  caixa(x0, y0, x1, y1, C_PAINEL, C_MOLDURA);
+  snprintf(b, sizeof(b), "%s (%d)", k.nome, k.tam);
+  textoCentro(x0, x1, y0 + 4, b, C_AMARELO);
+  // unidades na cidade, em miniatura (até 8)
+  int lista[16], n = unidadesEm(k.x, k.y, lista, 16);
+  texto(x0 + 8, y0 + 16, "Na cidade:", C_CINZA);
+  for (int i = 0; i < n && i < 8; ++i) desenhaUnidade(x0 + 12 + (i % 4) * 54, y0 + 27 + (i / 4) * 22, lista[i], 1);
+  if (n == 0) texto(x0 + 12, y0 + 32, "nenhuma unidade!", C_VERMELHO);
+  if (n > 8) { snprintf(b, sizeof(b), "+%d", n - 8); textoDireita(x1 - 6, y0 + 16, b, C_CINZA); }
+  // edifícios (duas colunas)
+  int ne = 0;
+  for (int e = 0; e < N_EDIFICIOS; ++e) if (temEdif(k, e)) ++ne;
+  snprintf(b, sizeof(b), "Edifícios (%d):", ne);
+  texto(x0 + 8, y0 + 74, b, C_AMARELO);
+  int j = 0;
+  for (int e = 0; e < N_EDIFICIOS; ++e) if (temEdif(k, e)) {
+    if (j < 20) {
+      char nome[16]; strncpy(nome, EDIFICIO[e].nome, 14); nome[14] = 0;
+      texto(x0 + 8 + (j / 10) * 116, y0 + 84 + (j % 10) * 9, nome, C_BRANCO);
+    }
+    ++j;
+  }
+  if (ne == 0) texto(x0 + 8, y0 + 84, "(nenhum)", C_CINZA_E);
+  // em baixo: resumo das unidades, para se ver se a cidade está bem defendida
+  caixa(8, 184, ECRA_W - 5, 197, C_PAINEL, C_MOLDURA);
+  int def = 0, fort = 0;
+  for (int i = 0; i < n; ++i) {
+    const Unidade & u = U[lista[i]];
+    if (eMilitar(u.tipo) && UNIDADE[u.tipo].dominio == D_TERRA) ++def;
+    if (u.estado == EU_FORTIFICADA || u.estado == EU_FORTIFICANDO) ++fort;
+  }
+  char r[110];
+  int p = snprintf(r, sizeof(r), "Unidades na cidade: %d (%d defensores, %d fortificadas)", n, def, fort);
+  // os tipos, agrupados: "Falange x2, Colonos x1"
+  bool visto[N_UNIDADES] = {};
+  bool primeiro = true;
+  for (int i = 0; i < n && p < (int)sizeof(r) - 20; ++i) {
+    int t = U[lista[i]].tipo;
+    if (visto[t]) continue;
+    visto[t] = true;
+    int c = 0; for (int q = 0; q < n; ++q) if (U[lista[q]].tipo == t) ++c;
+    p += snprintf(r + p, sizeof(r) - p, "%s %s x%d", primeiro ? ":" : ",", UNIDADE[t].nome, c);
+    primeiro = false;
+  }
+  if (strlen(r) > 77) { r[74] = r[75] = r[76] = '.'; r[77] = 0; }
+  texto(14, 187, r, def == 0 ? C_VERMELHO : C_BRANCO);
+  moldura();
+}
+
 void abreProducao(int ci, const char * titulo) {
   cidadeAtual = ci;
   modoAntesLista = modo;
@@ -234,45 +417,86 @@ void abreProducao(int ci, const char * titulo) {
   RendCidade r = calculaCidade(ci);
   char dir[16];
   int sel = 0;
+  juntaItem(producaoAuto(CID[ci]) ? "Auto (ligado: o governador escolhe)" : "Auto (o governador escolhe)", PROD_AUTO, true, "A");
+  if (producaoAuto(CID[ci])) sel = 0;
   for (int p = 0; p < N_UNIDADES; ++p) if (podeProduzir(ci, p)) {
     char t[44]; sprintf(t, "%s %d/%d/%d", UNIDADE[p].nome, UNIDADE[p].ataque, UNIDADE[p].defesa, UNIDADE[p].mov);
     sprintf(dir, "%d t.", turnosPara(UNIDADE[p].custo - CID[ci].escudos, r.sobraEscudos));
-    if (p == CID[ci].prod) sel = nItens;
+    if (p == CID[ci].prod && !producaoAuto(CID[ci])) sel = nItens;
     juntaItem(t, p, true, dir);
   }
   for (int e = 0; e < N_EDIFICIOS_TOTAL; ++e) if (podeProduzir(ci, PROD_EDIF + e)) {
     sprintf(dir, "%d t.", turnosPara(EDIFICIO[e].custo - CID[ci].escudos, r.sobraEscudos));
-    if (PROD_EDIF + e == CID[ci].prod) sel = nItens;
+    if (PROD_EDIF + e == CID[ci].prod && !producaoAuto(CID[ci])) sel = nItens;
     juntaItem(EDIFICIO[e].nome, PROD_EDIF + e, true, dir);
   }
   for (int w = 0; w < N_MARAVILHAS; ++w) if (podeProduzir(ci, PROD_MARAV + w)) {
     char t[44]; snprintf(t, sizeof(t), "*%s", MARAVILHA[w].nome);
     sprintf(dir, "%d t.", turnosPara(MARAVILHA[w].custo - CID[ci].escudos, r.sobraEscudos));
-    if (PROD_MARAV + w == CID[ci].prod) sel = nItens;
+    if (PROD_MARAV + w == CID[ci].prod && !producaoAuto(CID[ci])) sel = nItens;
     juntaItem(t, PROD_MARAV + w, true, dir);
   }
   itemSel = sel;
-  listaX0 = 100; listaW = 380; listaLinhas = 16;
-  strcpy(ajudaLista, "* = maravilha do mundo   ESC: manter");
+  listaX0 = 8; listaW = 384; listaLinhas = 15; listaY0 = 1;
+  strcpy(ajudaLista, "* = maravilha   ESC: manter");
+  extraLista = painelProducao; listaAltura = true;
+  limpaEcra(C_PRETO);
   entraModo(M_LISTA);
   desenhaLista();
+}
+
+// por baixo da lista da pesquisa: o que é a tecnologia escolhida e o que permite
+void painelPesquisa() {
+  if (nItens == 0) return;
+  int t = itens[itemSel].valor;
+  const int x0 = 8, x1 = ECRA_W - 9, y0 = 134, y1 = 197;
+  caixa(x0, y0, x1, y1, C_PAINEL, C_MOLDURA);
+  texto(x0 + 8, y0 + 4, TEC[t].nome, C_AMARELO);
+  // só a primeira frase do texto da enciclopédia (cabe em duas linhas)
+  char frase[200]; const char * txt = TEC_TEXTO[t];
+  int n = 0; while (txt[n] && n < (int)sizeof(frase) - 1) { frase[n] = txt[n]; if (txt[n] == '.' && (txt[n + 1] == ' ' || !txt[n + 1]) && n > 30) { ++n; break; } ++n; }
+  frase[n] = 0;
+  textoQuebrado(x0 + 8, y0 + 14, 76, frase, C_BRANCO);
+  // o que passa a ser possível
+  char b[200]; int p = snprintf(b, sizeof(b), "Permite:");
+  bool algo = false;
+  for (int u = 0; u < N_UNIDADES; ++u) if (UNIDADE[u].tec == t && p < 150) { p += snprintf(b + p, sizeof(b) - p, "%s %s", algo ? "," : "", UNIDADE[u].nome); algo = true; }
+  for (int e = 0; e < N_EDIFICIOS_TOTAL; ++e) if (EDIFICIO[e].tec == t && p < 150) { p += snprintf(b + p, sizeof(b) - p, "%s %s", algo ? "," : "", EDIFICIO[e].nome); algo = true; }
+  for (int w = 0; w < N_MARAVILHAS; ++w) if (MARAVILHA[w].tec == t && p < 150) { p += snprintf(b + p, sizeof(b) - p, "%s *%s", algo ? "," : "", MARAVILHA[w].nome); algo = true; }
+  for (int g = G_DESPOTISMO + 1; g < N_GOVERNOS; ++g) if (GOVERNO[g].tec == t && p < 150) { p += snprintf(b + p, sizeof(b) - p, "%s governo: %s", algo ? "," : "", GOVERNO[g].nome); algo = true; }
+  if (!algo) snprintf(b, sizeof(b), "Permite: abre caminho a novas descobertas.");
+  if (strlen(b) > 76) { b[73] = b[74] = b[75] = '.'; b[76] = 0; }
+  texto(x0 + 8, y0 + 43, b, C_VERDE);
+  // o que se poderá estudar depois
+  p = snprintf(b, sizeof(b), "Leva a:");
+  int nl = 0;
+  for (int q = 0; q < N_TECS; ++q) if ((TEC[q].pre1 == t || TEC[q].pre2 == t) && p < 150) { p += snprintf(b + p, sizeof(b) - p, "%s %s", nl ? "," : "", TEC[q].nome); ++nl; }
+  if (nl) { if (strlen(b) > 76) { b[73] = b[74] = b[75] = '.'; b[76] = 0; } texto(x0 + 8, y0 + 33, b, C_CINZA); }
 }
 
 void abrePesquisa() {
   modoAntesLista = modo;
   limpaLista("Os sábios perguntam: o que devemos estudar?", L_PESQUISA);
-  for (int t = 0; t < N_TECS; ++t) if (podePesquisar(jogador, t)) juntaItem(TEC[t].nome, t);
+  // lâmpadas por turno, para dizer quantos turnos leva
+  int porTurno = 0;
+  for (int i = 0; i < MAX_CIDADES; ++i) if (CID[i].viva && CID[i].civ == jogador) porTurno += calculaCidade(i).ciencia;
+  int custo = custoTec(jogador), falta = max(0, custo - (int)CIV[jogador].lampadas);
+  char dir[16];
+  if (porTurno > 0) snprintf(dir, sizeof(dir), "%d turnos", (int)min(99, turnosPara(falta, porTurno)) % 100);
+  else strcpy(dir, "");
+  for (int t = 0; t < N_TECS; ++t) if (podePesquisar(jogador, t)) juntaItem(TEC[t].nome, t, true, dir);
   if (nItens == 0) { CIV[jogador].pesquisa = SEM_TEC; return; }
-  char b[40]; sprintf(b, "Custo: %d lâmpadas", custoTec(jogador));
+  char b[64]; snprintf(b, sizeof(b), "Custo: %d lâmpadas (%d por turno)", custo, porTurno);
   strcpy(ajudaLista, b);
-  listaX0 = 120; listaW = 300; listaLinhas = 15;
+  listaX0 = 120; listaW = 400; listaLinhas = 10; listaY0 = 4;
+  extraLista = painelPesquisa;
   entraModo(M_LISTA);
   desenhaLista();
 }
 
 // ordens da unidade ativa (para quem joga com o joystick, ou ENTER)
 enum Ordem { O_FUNDAR, O_JUNTAR, O_ESTRADA, O_FERROVIA, O_REGA, O_MINA, O_FORTALEZA, O_LIMPAR, O_FORTIFICAR,
-             O_SENTINELA, O_IR, O_ESPERAR, O_NADA, O_CASA, O_DISPENSAR, O_VER_CIDADE, O_ACORDAR, O_FIM_TURNO, O_VER, O_MENU };
+             O_SENTINELA, O_IR, O_ATACAR, O_ESPERAR, O_NADA, O_CASA, O_DISPENSAR, O_VER_CIDADE, O_ACORDAR, O_FIM_TURNO, O_VER, O_MENU };
 void abreOrdens() {
   modoAntesLista = M_MAPA;
   limpaLista("Ordens", L_ORDENS);
@@ -292,6 +516,7 @@ void abreOrdens() {
     } else if (I.dominio == D_TERRA) juntaItem("Fortificar", O_FORTIFICAR, true, "F");
     juntaItem("Sentinela", O_SENTINELA, true, "S");
     juntaItem("Ir para...", O_IR, true, "G");
+    if (podeMarchar(ativa)) juntaItem("Atacar uma cidade...", O_ATACAR, true, "A");
     juntaItem("Esperar", O_ESPERAR, true, "W");
     juntaItem("Sem ordens", O_NADA, true, "ESPAÇO");
     if (ci >= 0 && CID[ci].civ == jogador) {
@@ -299,7 +524,8 @@ void abreOrdens() {
       juntaItem("Ver a cidade", O_VER_CIDADE, true, "C");
     }
     int lista[16], n = unidadesEm(u.x, u.y, lista, 16);
-    if (n > 1) juntaItem("Acordar as outras", O_ACORDAR, true, "U");
+    if (n > 1) juntaItem(eOceano(u.x, u.y) && UNIDADE[u.tipo].carga > 0 ? "Desembarcar (acordar os passageiros)" : "Acordar as outras",
+                         O_ACORDAR, true, "U");
     juntaItem("Dispensar a unidade", O_DISPENSAR, true, "D");
   }
   juntaItem("Modo ver (cursor)", O_VER, true, "V");
@@ -311,7 +537,7 @@ void abreOrdens() {
 }
 
 enum Menu { MN_TAXAS, MN_REVOLUCAO, MN_DIPLOMACIA, MN_CIDADES, MN_CIENCIA, MN_POVOS, MN_MARAVILHAS, MN_PONTOS,
-            MN_NAVE, MN_GRAVAR, MN_MUSICA, MN_SAIR, MN_VOLTAR };
+            MN_NAVE, MN_GRAVAR, MN_MUSICA, MN_INIMIGOS, MN_SAIR, MN_VOLTAR, MN_DORMIR };
 bool podeLancarNave(int civ) {
   const Civ & C = CIV[civ];
   return C.naveChega == 0 && C.nave[0] >= 4 && C.nave[1] >= 2 && C.nave[2] >= 1 && C.capital != SEM;
@@ -320,6 +546,7 @@ void abreMenu() {
   modoAntesLista = M_MAPA;
   limpaLista("Menu do jogo", L_MENU);
   juntaItem("As nossas cidades", MN_CIDADES, true, "F1");
+  juntaItem("Unidades a dormir (sentinela, fortificadas)", MN_DORMIR, true, "F2");
   juntaItem("Impostos, luxo e ciência", MN_TAXAS, true, "T");
   juntaItem("Revolução (mudar de governo)", MN_REVOLUCAO, CIV[jogador].anarquia == 0, "X");
   juntaItem("Diplomacia", MN_DIPLOMACIA, true, "Y");
@@ -328,8 +555,9 @@ void abreMenu() {
   juntaItem("Maravilhas do mundo", MN_MARAVILHAS, true, "F7");
   juntaItem("Pontuação", MN_PONTOS, true, "F9");
   if (podeLancarNave(jogador)) juntaItem("Lançar a nave espacial!", MN_NAVE, true);
-  juntaItem("Gravar o jogo", MN_GRAVAR, temSD, "F10");
+  juntaItem("Gravar o jogo", MN_GRAVAR, true, "F10");
   juntaItem(musicaPermitida ? "Música: ligada" : "Música: desligada", MN_MUSICA, true);
+  juntaItem(verInimigos ? "Ver movimentos dos outros: sim" : "Ver movimentos dos outros: não", MN_INIMIGOS, true);
   juntaItem("Sair para o título", MN_SAIR, true);
   juntaItem("Voltar ao jogo", MN_VOLTAR, true, "ESC");
   listaX0 = 120; listaW = 300; listaLinhas = 15;
@@ -370,7 +598,7 @@ void desenhaRelatorio() {
         if (!conhece) continue;
         RGB888 cor = corCiv(corDe(c));
         texto(8, y, nomePovo(c), cor);
-        texto(136, y, POVO[CIV[c].povo].lider, C_BRANCO);
+        texto(136, y, nomeLider(c), C_BRANCO);
         texto(304, y, GOVERNO[CIV[c].governo].nome, C_BRANCO);
         sprintf(b, "%3d %4d", contaCidades(c), CIV[c].nTecs);
         texto(408, y, b, C_BRANCO);
@@ -539,16 +767,51 @@ void desenhaCidadao(int x, int y, RGB888 roupa, RGB888 cara, char marca) {
   }
 }
 
-// rendimento de uma casa no mapa da cidade: comida, escudos e comércio com um quadradinho de cor
+// ícones dos recursos (8x5, com contorno): comida (espiga), escudos e comércio (seta)
+const int ICO_W = 9, ICO_H = 6;
+const char * const ICONE_REC[3][ICO_H] = {
+  { "..KKKKK..", ".KYYOYYK.", "KYOYYYOYK", "KOYYOYYOK", ".KGGGGGK.", "..KKKKK.." },   // comida: espiga
+  { "KKKKKKKK.", "KWWggggK.", "KWggggkK.", ".KgggkK..", "..KgkK...", "...KK...." },   // escudos
+  { ".....K...", "KKKKKYK..", "KYYYYYYK.", "KOOOOOOK.", "KKKKKOK..", ".....K..." },   // comércio: seta
+};
+RGB888 corIcone(char c) {
+  switch (c) {
+    case 'K': return C_PRETO;
+    case 'Y': return RGB888(255, 255, 85);
+    case 'O': return RGB888(255, 170, 0);
+    case 'G': return RGB888(0, 170, 0);
+    case 'W': return C_BRANCO;
+    case 'g': return RGB888(170, 170, 170);
+    case 'k': return RGB888(85, 85, 85);
+  }
+  return C_PRETO;
+}
+void desenhaIconeRec(int x, int y, int tipo) {
+  for (int r = 0; r < ICO_H; ++r) {
+    const char * l = ICONE_REC[tipo][r];
+    for (int c = 0; l[c]; ) {
+      if (l[c] == '.') { ++c; continue; }
+      int c0 = c; char ch = l[c];
+      while (l[c] == ch) ++c;                       // um traço de cada vez
+      canvas.setBrushColor(corIcone(ch));
+      canvas.fillRectangle(x + c0, y + r, x + c - 1, y + r);
+    }
+  }
+}
+// uma fila de n ícones a começar em x (aperta-os se não couberem em larg)
+void filaIcones(int x, int y, int n, int tipo, int larg) {
+  if (n <= 0) return;
+  int passo = n <= 1 ? 8 : min(8, (larg - ICO_W) / (n - 1));
+  for (int i = 0; i < n; ++i) desenhaIconeRec(x + i * passo, y, tipo);
+}
+// rendimento de uma casa no mapa da cidade, como no original: uma fila de espigas, uma de escudos e uma de setas
 void desenhaRendimento(int sx, int sy, Rend v) {
-  retangulo(sx + 2, sy + TILE_H - 10, sx + TILE_W - 3, sy + TILE_H - 2, C_PRETO);
-  const RGB888 cor[3] = { C_VERDE, C_OURO, C_AMARELO };
-  int val[3] = { v.comida, v.escudos, v.comercio };
+  int fila = 0;
+  const int val[3] = { v.comida, v.escudos, v.comercio };
   for (int i = 0; i < 3; ++i) {
-    int x = sx + 4 + i * 14, y = sy + TILE_H - 9;
-    retangulo(x, y + 1, x + 3, y + 6, cor[i]);
-    char t[12]; sprintf(t, "%d", min(9, (int)val[i]));
-    texto(x + 5, y, t, cor[i]);
+    if (val[i] <= 0) continue;
+    filaIcones(sx + 2, sy + 1 + fila * ICO_H, val[i], i, TILE_W - 4);
+    ++fila;
   }
 }
 
@@ -601,8 +864,12 @@ void desenhaCidade() {
   texto(8, 131, b, C_VERDE);
   sprintf(b, "Escudos  %3d (-%d) %+d", r.escudos, r.apoio, r.sobraEscudos);
   texto(8, 140, b, C_OURO);
-  sprintf(b, "Comércio %3d (corr. %d)", r.comercio, r.corrupcao);
+  sprintf(b, "Comércio %3d (-%d)", r.comercio, r.corrupcao);
   texto(8, 149, b, C_AMARELO);
+  // os mesmos totais em ícones, como no original
+  filaIcones(172, 132, r.comida, 0, 78);
+  filaIcones(172, 141, r.escudos, 1, 78);
+  filaIcones(172, 150, r.comercio, 2, 78);
   sprintf(b, "Ouro %+d Luxo %d Ciên. %d", r.ouro, r.luxo, r.ciencia);
   texto(8, 158, b, C_CINZA);
   // celeiro
@@ -908,13 +1175,14 @@ void mudaParaVer(bool liga) {
   if (liga) {
     if (ativa >= 0 && U[ativa].viva) { cursorX = U[ativa].x; cursorY = U[ativa].y; }
     else { cursorX = embrulhaX(camX + VIEW_W / 2); cursorY = camY + VIEW_H / 2; }
-    poeBarra("Modo ver: setas movem o cursor; ESPAÇO abre a cidade.", "ESC ou V: voltar às unidades.");
+    poeBarra("Modo ver: setas; ESPAÇO acorda as unidades ou abre a cidade.", "ESC ou V: voltar.  F2: unidades a dormir.");
   }
 }
 
 void continuaTurno();
+bool haChegadaPronta();
 void mostraDepoisDeAcao() {
-  if (!mostraMensagens()) { entraModo(M_MAPA); desenhaTudo(); if (encontrosPendentes) continuaTurno(); }
+  if (!mostraMensagens()) { entraModo(M_MAPA); desenhaTudo(); if (encontrosPendentes || nTecsNovas || nCenas || haChegadaPronta()) continuaTurno(); }
 }
 
 void acabaTurnoJogador();
@@ -944,7 +1212,7 @@ void executaOrdem(int o) {
       int ci = fundaCidade(jogador, u.x, u.y);
       apagaUnidade(ativa);
       ativa = -1;
-      if (ci >= 0) { somTri(784, 200, 50); abreProducao(ci, "Nova cidade! O que vamos fazer?"); return; }
+      if (ci >= 0) { somTri(784, 200, 50); abreNomeCidade(ci); return; }
       break;
     }
     case O_JUNTAR: {
@@ -964,8 +1232,9 @@ void executaOrdem(int o) {
       modoVer = true; cursorX = u.x; cursorY = u.y;
       entraModo(M_DESTINO);
       desenhaTudo();
-      poeBarra("Ir para: escolhe o destino com as setas e ESPAÇO.", "ESC: cancelar.");
+      poeBarra("Ir para: escolhe o destino com as setas e ESPAÇO.", "C: lista das nossas cidades.  ESC: cancelar.");
       return;
+    case O_ATACAR: abreAlvos(); return;
     case O_ESPERAR: { int a = ativa; proximaUnidade(); if (ativa == a) ativa = a; break; }
     case O_NADA: u.mov = 0; break;
     case O_CASA: { int ci = cidadeEm(u.x, u.y); if (ci >= 0) u.casa = ci; break; }
@@ -974,6 +1243,12 @@ void executaOrdem(int o) {
     case O_ACORDAR: {
       int lista[16], n = unidadesEm(u.x, u.y, lista, 16);
       for (int k = 0; k < n; ++k) if (U[lista[k]].civ == jogador && U[lista[k]].estado != EU_TRABALHO) U[lista[k]].estado = EU_NADA;
+      // num navio no mar: passa logo para o primeiro passageiro que ainda se pode mexer, para desembarcar
+      if (eOceano(u.x, u.y) && UNIDADE[u.tipo].dominio == D_MAR)
+        for (int k = 0; k < n; ++k) {
+          const Unidade & p = U[lista[k]];
+          if (p.civ == jogador && UNIDADE[p.tipo].dominio == D_TERRA && p.mov > 0) { ativa = lista[k]; break; }
+        }
       break;
     }
   }
@@ -1029,7 +1304,7 @@ void tentaMover(int d) {
   if (ativa >= 0 && !naVista(U[ativa].x, U[ativa].y, 2)) centraEm(U[ativa].x, U[ativa].y);
   if (nMsg) { desenhaTudo(); mostraMensagens(); return; }
   desenhaTudo();
-  if (encontrosPendentes) continuaTurno();          // primeiro encontro com outro povo
+  if (encontrosPendentes || nTecsNovas || nCenas || haChegadaPronta()) continuaTurno();   // encontro, descoberta, cena ou ataque a confirmar
 }
 
 // direção pedida pelo jogador neste fotograma (-1 = nenhuma)
@@ -1109,15 +1384,19 @@ void atualizaMapa() {
   }
   if (premiu(VK_SPACE) && ativa >= 0) { executaOrdem(O_NADA); return; }
   if (premiu(VK_F1)) { abreListaCidades(); return; }
+  if (premiu(VK_F2)) { abreDormir(); return; }
   if (premiu(VK_F3)) { abreRelatorio(MN_POVOS); return; }
   if (premiu(VK_F6)) { abreRelatorio(MN_CIENCIA); return; }
   if (premiu(VK_F7)) { abreRelatorio(MN_MARAVILHAS); return; }
   if (premiu(VK_F9)) { abreRelatorio(MN_PONTOS); return; }
-  if (premiu(VK_F10)) { if (gravaJogo()) poeBarra("Jogo gravado no cartão SD.", ""); else poeBarra("Não foi possível gravar (cartão SD?).", ""); return; }
+  if (premiu(VK_F10)) {                     // grava na mesma posição da última vez; se não houver, pergunta
+    if (ultimaGravacao < 0) { abreGravar(); return; }
+    poeBarra(gravaJogo(ultimaGravacao) ? "Jogo gravado no cartão SD." : "Não foi possível gravar (cartão SD?).", ""); return;
+  }
   if (premiuLetra('T')) { taxaSel = 0; entraModo(M_TAXAS); desenhaTaxas(); return; }
   if (premiuLetra('X')) { if (CIV[jogador].anarquia == 0) abreGoverno(); return; }
   if (premiuLetra('Y')) { abreDiplomacia(); return; }
-  if (premiuLetra('V')) { mudaParaVer(true); desenhaTudo(); poeBarra("Modo ver: setas movem o cursor; ESPAÇO abre a cidade.", "ESC ou V: voltar às unidades."); return; }
+  if (premiuLetra('V')) { mudaParaVer(true); desenhaTudo(); poeBarra("Modo ver: setas; ESPAÇO acorda as unidades ou abre a cidade.", "ESC ou V: voltar.  F2: unidades a dormir."); return; }
   if (ativa < 0) return;
   Unidade & u = U[ativa];
   bool colono = UNIDADE[u.tipo].flags & U_COLONO;
@@ -1128,7 +1407,8 @@ void atualizaMapa() {
   if (premiuLetra('P') && colono) { executaOrdem(O_LIMPAR); return; }
   if (premiuLetra('F')) { executaOrdem(colono ? O_FORTALEZA : O_FORTIFICAR); return; }
   if (premiuLetra('S')) { executaOrdem(O_SENTINELA); return; }
-  if (premiuLetra('G')) { executaOrdem(O_IR); return; }
+  if (premiuLetra('G') || (premiuLetra('M') && !colono)) { executaOrdem(O_IR); return; }
+  if (premiuLetra('A')) { abreAlvos(); return; }
   if (premiuLetra('W')) { executaOrdem(O_ESPERAR); return; }
   if (premiuLetra('H')) { executaOrdem(O_CASA); return; }
   if (premiuLetra('D')) { executaOrdem(O_DISPENSAR); return; }
@@ -1141,6 +1421,103 @@ void atualizaMapa() {
   }
 }
 
+// "ir para" uma das nossas cidades: lista com as distâncias
+void abreIrCidade() {
+  if (ativa < 0 || !U[ativa].viva) return;
+  const Unidade & u = U[ativa];
+  const InfoUnidade & I = UNIDADE[u.tipo];
+  modoAntesLista = M_DESTINO;
+  char t[64]; snprintf(t, sizeof(t), "%s: ir para que cidade?", I.nome);
+  limpaLista(t, L_IR_CIDADE);
+  int cand[MAX_CIDADES], dist[MAX_CIDADES], n = 0;
+  for (int ci = 0; ci < MAX_CIDADES; ++ci) {
+    const Cidade & k = CID[ci];
+    if (!k.viva || k.civ != jogador) continue;
+    cand[n] = ci; dist[n] = distancia(u.x, u.y, k.x, k.y); ++n;
+  }
+  for (int a = 0; a < n; ++a) for (int b = a + 1; b < n; ++b) if (dist[b] < dist[a]) { int x = dist[a]; dist[a] = dist[b]; dist[b] = x; x = cand[a]; cand[a] = cand[b]; cand[b] = x; }
+  for (int j = 0; j < n; ++j) {
+    const Cidade & k = CID[cand[j]];
+    // por terra só se chega às cidades do mesmo continente; os navios só às costeiras
+    bool chega = true;
+    const char * porque = "";
+    if (I.dominio == D_TERRA && continente(k.x, k.y) != continente(u.x, u.y)) { chega = false; porque = " (outro continente)"; }
+    if (I.dominio == D_MAR && !juntoAoMar(k.x, k.y)) { chega = false; porque = " (não tem porto)"; }
+    if (k.x == u.x && k.y == u.y) { chega = false; porque = " (já está aqui)"; }
+    char nome[44], d[16];
+    snprintf(nome, sizeof(nome), "%-13s %2d%s", k.nome, k.tam, porque);
+    snprintf(d, sizeof(d), "%d casa%s", dist[j], dist[j] == 1 ? "" : "s");
+    juntaItem(nome, cand[j], chega, d);
+  }
+  if (n == 0) { somErro(); poeBarra("Ainda não temos cidades.", "ESC: cancelar."); return; }
+  for (int j = 0; j < nItens; ++j) if (itens[j].ativo) { itemSel = j; break; }
+  strcpy(ajudaLista, "ESPAÇO: ir para lá   ESC: escolher no mapa");
+  listaX0 = 80; listaW = 380; listaLinhas = 14;
+  entraModo(M_LISTA);
+  desenhaLista();
+}
+
+// ---- unidades a dormir: lista das que estão de sentinela ou fortificadas, para as acordar sem rato ----
+const int DORMIR_TODAS = 30000;
+void abreDormir() {
+  modoAntesLista = M_MAPA;
+  limpaLista("Unidades a dormir: qual acordamos?", L_DORMIR);
+  int cand[MAX_UNIDADES], ord[MAX_UNIDADES], n = 0, fora = 0;
+  for (int i = 0; i < MAX_UNIDADES; ++i) {
+    const Unidade & u = U[i];
+    if (!u.viva || u.civ != jogador) continue;
+    if (u.estado != EU_SENTINELA && u.estado != EU_FORTIFICANDO && u.estado != EU_FORTIFICADA && u.estado != EU_A_BORDO) continue;
+    int ci = cidadeEm(u.x, u.y);
+    if (ci < 0) ++fora;
+    // primeiro as que estão fora das cidades, depois por cidade mais próxima
+    int perto = cidadeMaisPerto(jogador, u.x, u.y);
+    cand[n] = i; ord[n] = (ci >= 0 ? 100000 : 0) + (perto >= 0 ? perto * 100 + distancia(u.x, u.y, CID[perto].x, CID[perto].y) : 99); ++n;
+  }
+  for (int a = 0; a < n; ++a) for (int b = a + 1; b < n; ++b) if (ord[b] < ord[a]) { int x = ord[a]; ord[a] = ord[b]; ord[b] = x; x = cand[a]; cand[a] = cand[b]; cand[b] = x; }
+  if (n == 0) { somErro(); entraModo(M_MAPA); desenhaTudo(); poeBarra("Não há unidades a dormir.", ""); return; }
+  if (fora > 1) { char t[48]; snprintf(t, sizeof(t), "Acordar todas fora das cidades (%d)", fora); juntaItem(t, DORMIR_TODAS, true); }
+  for (int j = 0; j < n && nItens < MAX_ITENS; ++j) {
+    const Unidade & u = U[cand[j]];
+    const char * est = u.estado == EU_SENTINELA ? "sentinela" : u.estado == EU_A_BORDO ? "a bordo" : "fortif.";
+    if (u.estado == EU_SENTINELA && eOceano(u.x, u.y) && UNIDADE[u.tipo].dominio == D_TERRA) est = "a bordo";
+    int ci = cidadeEm(u.x, u.y), perto = cidadeMaisPerto(jogador, u.x, u.y);
+    char t[60], d[16];
+    snprintf(t, sizeof(t), "%-12s %-9s %s", UNIDADE[u.tipo].nome, est, ci >= 0 ? CID[ci].nome : perto >= 0 ? CID[perto].nome : "");
+    if (ci >= 0) snprintf(d, sizeof(d), "na cidade");
+    else if (perto >= 0) { int dd = distancia(u.x, u.y, CID[perto].x, CID[perto].y); snprintf(d, sizeof(d), "a %d casa%s", dd, dd == 1 ? "" : "s"); }
+    else d[0] = 0;
+    juntaItem(t, cand[j], true, d[0] ? d : nullptr);
+  }
+  strcpy(ajudaLista, "ESPAÇO: acordar e ir para ela   ESC: voltar");
+  listaX0 = 60; listaW = 420; listaLinhas = 15;
+  entraModo(M_LISTA);
+  desenhaLista();
+}
+// acorda a unidade i (ou todas as de fora das cidades) e passa para ela
+void acordaDormir(int v) {
+  modoVer = false;
+  entraModo(M_MAPA);
+  if (v == DORMIR_TODAS) {
+    int primeira = -1;
+    for (int i = 0; i < MAX_UNIDADES; ++i) {
+      Unidade & u = U[i];
+      if (!u.viva || u.civ != jogador || cidadeEm(u.x, u.y) >= 0) continue;
+      if (u.estado != EU_SENTINELA && u.estado != EU_FORTIFICANDO && u.estado != EU_FORTIFICADA && u.estado != EU_A_BORDO) continue;
+      u.estado = EU_NADA;
+      if (primeira < 0 && u.mov > 0) primeira = i;
+    }
+    if (primeira >= 0) { ativa = primeira; centraEm(U[ativa].x, U[ativa].y); }
+    desenhaTudo();
+    return;
+  }
+  if (v < 0 || v >= MAX_UNIDADES || !U[v].viva) { desenhaTudo(); return; }
+  Unidade & u = U[v];
+  u.estado = EU_NADA;
+  centraEm(u.x, u.y);
+  if (u.mov > 0) { ativa = v; desenhaTudo(); }
+  else { desenhaTudo(); poeBarra("Acordada. Já não tem movimento: mexe-se no próximo turno.", ""); }
+}
+
 void atualizaDestino() {
   int d = direcaoPedida();
   if (d >= 0) {
@@ -1149,6 +1526,7 @@ void atualizaDestino() {
     desenhaMapa();
   }
   if (premiu(VK_ESCAPE) || joyVolta()) { modoVer = false; entraModo(M_MAPA); desenhaTudo(); poeBarra("", ""); return; }
+  if (premiuLetra('C')) { abreIrCidade(); return; }
   if (premiu(VK_RETURN) || premiu(VK_SPACE) || premiu(VK_KP_ENTER) || joyFogo()) {
     modoVer = false;
     entraModo(M_MAPA);
@@ -1189,10 +1567,103 @@ bool verificaFim() {
 }
 
 void desenhaFim();
-void acabaTurnoJogador() {
-  poeBarra("Os outros povos estão a jogar...", "");
+// ---------------- movimentos dos outros povos (opção do menu, como "Enemy Moves" no original) ----------------
+bool turnoDosOutros = false;        // a IA está a jogar
+bool saltaMovIA = false;            // o jogador carregou numa tecla: não mostrar mais neste turno
+
+// o jogador vê agora esta casa? (ao lado das suas unidades ou a 2 casas das suas cidades)
+bool jogadorVe(int x, int y) {
+  for (int k = 0; k < MAX_UNIDADES; ++k) if (U[k].viva && U[k].civ == jogador && distancia(U[k].x, U[k].y, x, y) <= 1) return true;
+  for (int k = 0; k < MAX_CIDADES; ++k) if (CID[k].viva && CID[k].civ == jogador && distancia(CID[k].x, CID[k].y, x, y) <= 2) return true;
+  return false;
+}
+// espera ms milissegundos com a música a tocar; ESPAÇO, ESC ou ENTER saltam o resto dos movimentos
+void esperaMovIA(int ms) {
   canvas.waitCompletion(false);
+  uint32_t fim = millis() + ms;
+  while ((int32_t)(millis() - fim) < 0) {
+    leEntrada();
+    atualizaMusica(millis());
+    if (premiu(VK_SPACE) || premiu(VK_ESCAPE) || premiu(VK_RETURN) || joyFogo()) saltaMovIA = true;
+    delay(4);
+  }
+}
+// redesenha as casas entre (ox, oy) e (nx, ny); 'semUnidade' = casa desenhada só com o terreno
+void redesenhaPar(int ox, int oy, int nx, int ny, int semX, int semY) {
+  const int xs[4] = { ox, nx, ox, nx }, ys[4] = { oy, ny, ny, oy };
+  for (int k = 0; k < 4; ++k) {
+    bool repetida = false;
+    for (int j = 0; j < k; ++j) if (xs[j] == xs[k] && ys[j] == ys[k]) repetida = true;
+    int vx = difX(camX, xs[k]), vy = ys[k] - camY;
+    if (repetida || vx < 0 || vx >= VIEW_W || vy < 0 || vy >= VIEW_H) continue;
+    bool sem = embrulhaX(xs[k]) == embrulhaX(semX) && ys[k] == semY;
+    desenhaCasa(vx * TILE_W, vy * TILE_H, xs[k], ys[k], !sem);
+  }
+}
+void animaIA(int i, int civ, int ox, int oy, int nx, int ny, int fase) {
+  static bool mostrouAtaque = false;            // o fim do combate mostra-se sempre que se mostrou o início
+  if (fase == 2) {
+    if (!mostrouAtaque) return;
+    mostrouAtaque = false;
+    if (!naVista(ox, oy, 0) || !naVista(nx, ny, 0)) return;
+    calculaVistoAgora();
+  } else {
+    if (!verInimigos || !turnoDosOutros || saltaMovIA || civ == jogador) return;
+    if (!jogadorVe(ox, oy) && !jogadorVe(nx, ny)) return;
+  }
+  if (fase == 2) {
+    canvas.setClippingRect(Rect(0, 0, MAPA_PX_W - 1, MAPA_PX_H - 1));
+    redesenhaPar(ox, oy, nx, ny, -1000, -1000);
+    canvas.setClippingRect(Rect(0, 0, ECRA_W - 1, ECRA_H - 1));
+    desenhaNomesCidades(); moldura();
+    esperaMovIA(350);
+    return;
+  }
+  // a vista acompanha a unidade
+  if (!naVista(ox, oy, 0) || !naVista(nx, ny, 0)) {
+    centraEm(nx, ny);
+    desenhaMapa(); desenhaPainel();
+    poeBarra("Os outros povos estão a jogar...", "ESPAÇO: não mostrar mais");
+  } else calculaVistoAgora();
+  if (!naVista(ox, oy, 0) || !naVista(nx, ny, 0)) return;
+  const int ax = difX(camX, ox) * TILE_W, ay = (oy - camY) * TILE_H;
+  const int bx = difX(camX, nx) * TILE_W, by = (ny - camY) * TILE_H;
+  canvas.setClippingRect(Rect(0, 0, MAPA_PX_W - 1, MAPA_PX_H - 1));
+  switch (fase) {
+    case 0: {                                    // desliza da casa de partida para a de chegada
+      const int N = 5;
+      for (int f = 1; f <= N && !saltaMovIA; ++f) {
+        redesenhaPar(ox, oy, nx, ny, nx, ny);
+        if (f < N) desenhaUnidade(ax + (bx - ax) * f / N, ay + (by - ay) * f / N, i, 1);
+        else redesenhaPar(ox, oy, nx, ny, -1000, -1000);
+        esperaMovIA(28);
+      }
+      redesenhaPar(ox, oy, nx, ny, -1000, -1000);
+      break;
+    }
+    case 1: {                                    // investe duas vezes contra o alvo
+      mostrouAtaque = true;
+      somTri(140, 90, 70);
+      for (int r = 0; r < 2 && !saltaMovIA; ++r)
+        for (int f = 0; f <= 4; ++f) {
+          int q = f <= 2 ? f : 4 - f;            // 0, 1, 2, 1, 0
+          redesenhaPar(ox, oy, nx, ny, ox, oy);
+          desenhaUnidade(ax + (bx - ax) * q / 5, ay + (by - ay) * q / 5, i, 1);
+          esperaMovIA(30);
+        }
+      break;
+    }
+  }
+  canvas.setClippingRect(Rect(0, 0, ECRA_W - 1, ECRA_H - 1));
+  desenhaNomesCidades();
+  moldura();
+}
+
+void acabaTurnoJogador() {
   ativa = -1;
+  poeBarra("Os outros povos estão a jogar...", verInimigos ? "ESPAÇO: não mostrar mais" : "");
+  canvas.waitCompletion(false);
+  turnoDosOutros = true; saltaMovIA = false;
   for (int c = 1; c <= N_CIVS; ++c) {
     int civ = c % N_CIVS;                 // 1..7 e depois os bárbaros (0)
     if (civ == jogador || !CIV[civ].viva) continue;
@@ -1204,15 +1675,18 @@ void acabaTurnoJogador() {
       mensagem("Os %s lançaram uma nave espacial para Alfa do Centauro! Chega dentro de 12 turnos.", nomePovo(civ));
     }
   }
+  turnoDosOutros = false;
   ++turno;
   if (turno % 10 == 0) { Serial.printf("[jogo] turno %d:", turno); for (int c = 1; c < N_CIVS; ++c) if (CIV[c].viva) Serial.printf(" %d:%dc/%du", c, contaCidades(c), contaUnidades(c)); Serial.printf(" bárb %du\n", contaUnidades(0)); }
   if (verificaFim()) { desenhaFim(); return; }
-  if (turno % 10 == 0 && temSD) gravaJogo();
+  if (turno % 10 == 0 && temSD) gravaJogo(GRAV_AUTO);     // gravação automática, à parte das 10 posições
   comecaTurnoJogador();
 }
 
 void comecaTurnoJogador() {
   inicioTurnoCiv(jogador);
+  noTitulo = false;
+  { int n = CIV[jogador].nTecs; epocaMusical = n < 15 ? 0 : n < 35 ? 1 : n < 55 ? 2 : 3; }
   // ir para: as unidades seguem o caminho
   for (int i = 0; i < MAX_UNIDADES; ++i) if (U[i].viva && U[i].civ == jogador && U[i].estado == EU_DESTINO) segueDestino(i);
   // as sentinelas acordam se houver estrangeiros ao lado
@@ -1276,7 +1750,7 @@ void desenhaEncontro() {
   retangulo(415, 30, 419, 105, ouroE);
   for (int y = 106; y < 112; y += 2)                        // chão em xadrez
     for (int x = 1; x < ECRA_W - 2; x += 16) retangulo(x + ((y / 2) & 1) * 8, y, x + ((y / 2) & 1) * 8 + 7, y + 1, pedraE);
-  desenhaArte(240, 22, arte_retrato[CIV[c].povo % N_RETRATOS], RETRATO_W, RETRATO_H);
+  desenhaArte(240, 22, dadosRetrato(CIV[c].povo % N_RETRATOS), RETRATO_W, RETRATO_H);
   // o que o líder diz
   caixa(4, 113, ECRA_W - 5, 197, C_PAINEL, C_MOLDURA);
   snprintf(b, sizeof(b), "%s, líder dos %s", POVO[CIV[c].povo].lider, nomePovo(c));
@@ -1286,7 +1760,7 @@ void desenhaEncontro() {
     "Respeitamos quem nos respeita.",
     "Os nossos exércitos são temidos em toda a parte, mas hoje estendemos-vos a mão." };
   snprintf(b, sizeof(b), "\"Saudações, %s, chefe dos %s! %s Proponho que os nossos povos vivam em paz. Aceitas?\"",
-           POVO[CIV[jogador].povo].lider, nomePovo(jogador), tom[POVO[CIV[c].povo].agressivo % 3]);
+           nomeLider(jogador), nomePovo(jogador), tom[POVO[CIV[c].povo].agressivo % 3]);
   textoQuebrado(16, 132, 74, b, C_BRANCO);
   desenhaOpcoesEncontro();
 }
@@ -1313,14 +1787,292 @@ void atualizaEncontro() {
   if (tempo > 10 && carregouFogo()) { somOk(); respondeEncontro(encontroSel == 0); return; }
 }
 
+// ---------------- marcha contra uma cidade inimiga (tecla A) ----------------
+bool haChegadaPronta() {
+  for (int k = 0; k < nChegadas; ++k) { int i = chegouUnid[k]; if (U[i].viva && U[i].mov > 0) return true; }
+  return false;
+}
+bool podeMarchar(int i) {
+  const Unidade & u = U[i];
+  return u.viva && eMilitar(u.tipo) && !(UNIDADE[u.tipo].flags & U_NUCLEAR);
+}
+// cidades estrangeiras conhecidas que a unidade pode alcançar, da mais perto para a mais longe
+void abreAlvos() {
+  if (ativa < 0 || !podeMarchar(ativa)) { somErro(); poeBarra("Só as unidades militares podem marchar contra uma cidade.", ""); return; }
+  const Unidade & u = U[ativa];
+  const InfoUnidade & I = UNIDADE[u.tipo];
+  modoAntesLista = M_MAPA;
+  char t[64]; snprintf(t, sizeof(t), "%s: atacar que cidade?", I.nome);
+  limpaLista(t, L_ALVOS);
+  int cand[MAX_CIDADES], dist[MAX_CIDADES], n = 0;
+  for (int ci = 0; ci < MAX_CIDADES; ++ci) {
+    const Cidade & k = CID[ci];
+    if (!k.viva || k.civ == jogador || !viu(jogador, k.x, k.y)) continue;
+    if (I.dominio == D_TERRA && continente(k.x, k.y) != continente(u.x, u.y)) continue;   // por terra, só no mesmo continente
+    if (I.dominio == D_MAR && !juntoAoMar(k.x, k.y)) continue;
+    cand[n] = ci; dist[n] = distancia(u.x, u.y, k.x, k.y); ++n;
+  }
+  for (int a = 0; a < n; ++a) for (int b = a + 1; b < n; ++b) if (dist[b] < dist[a]) { int x = dist[a]; dist[a] = dist[b]; dist[b] = x; x = cand[a]; cand[a] = cand[b]; cand[b] = x; }
+  for (int j = 0; j < n; ++j) {
+    const Cidade & k = CID[cand[j]];
+    char nome[44], d[16];
+    snprintf(nome, sizeof(nome), "%-13s %s%s", k.nome, nomePovo(k.civ), k.civ == 0 ? "" : (emGuerra(jogador, k.civ) ? " (guerra)" : " (paz)"));
+    snprintf(d, sizeof(d), "%d casa%s", dist[j], dist[j] == 1 ? "" : "s");
+    juntaItem(nome, cand[j], true, d);
+  }
+  if (n == 0) { somErro(); poeBarra("Não conhecemos nenhuma cidade estrangeira ao alcance desta unidade.", ""); return; }
+  strcpy(ajudaLista, "ESPAÇO: marchar até lá   ESC: cancelar");
+  listaX0 = 60; listaW = 400; listaLinhas = 14;
+  entraModo(M_LISTA);
+  desenhaLista();
+}
+void marchaPara(int ci) {
+  entraModo(M_MAPA);
+  if (ativa < 0 || !U[ativa].viva) { desenhaTudo(); return; }
+  Unidade & u = U[ativa];
+  u.gx = CID[ci].x; u.gy = CID[ci].y; u.estado = EU_DESTINO;
+  if (direcaoPara(u.x, u.y, u.gx, u.gy) >= 0) { u.estado = EU_NADA; u.gx = SEM; registaChegada(ativa, ci); }   // já está ao lado
+  else segueDestino(ativa);
+  if (!haChegadaPronta()) proximaUnidade();
+  desenhaTudo();
+  if (u.estado == EU_DESTINO) poeBarra("A caminho de", CID[ci].nome);
+  continuaTurno();
+}
+
+// janela de confirmação: as duas forças lado a lado e a probabilidade de vencer
+int ataqueUnid = -1, ataqueCid = -1, ataqueSel = 0;
+void desenhaLadoAtaque(int x, int y, int i, const char * titulo, const char * linha2, int forca, RGB888 corForca) {
+  char b[48];
+  texto(x, y, titulo, C_CINZA);
+  if (i >= 0) {
+    int cor = corDe(U[i].civ);
+    retangulo(x, y + 11, x + TILE_W - 3, y + 11 + TILE_H - 2, corCiv(cor));
+    canvas.setPenColor(corCivE(cor)); canvas.drawRectangle(x, y + 11, x + TILE_W - 3, y + 11 + TILE_H - 2);
+    canvas.drawBitmap(x - 1, y + 10, &BMP_UNI[U[i].tipo]);
+    snprintf(b, sizeof(b), "%s%s", UNIDADE[U[i].tipo].nome, U[i].vet ? " (vet.)" : "");
+    texto(x + TILE_W + 2, y + 12, b, C_BRANCO);
+  } else texto(x, y + 16, "ninguém a defender!", C_VERDE);
+  texto(x + (i >= 0 ? TILE_W + 2 : 0), y + 22, linha2, C_CINZA);
+  snprintf(b, sizeof(b), "Força: %d", forca);
+  texto(x, y + 34, b, corForca);
+}
+void desenhaAtaque() {
+  const int i = ataqueUnid, ci = ataqueCid;
+  const Cidade & k = CID[ci];
+  char b[96], l2[48];
+  const int x0 = 20, x1 = MAPA_PX_W - 20, y0 = 30, y1 = 152;
+  caixa(x0, y0, x1, y1, C_PAINEL, C_MOLDURA);
+  snprintf(b, sizeof(b), "Chegámos a %s (%s, tamanho %d)", k.nome, nomePovo(k.civ), k.tam);
+  textoCentro(x0, x1, y0 + 4, b, C_AMARELO);
+  int d = defensorEm(k.x, k.y, i);
+  int fa = forcaAtaque(i), fd = d >= 0 ? forcaDefesa(d, i) : 0;
+  snprintf(l2, sizeof(l2), "Ataq %d", UNIDADE[U[i].tipo].ataque);
+  desenhaLadoAtaque(x0 + 10, y0 + 18, i, "Nós:", l2, fa, C_VERDE);
+  if (d >= 0) {
+    int l = snprintf(l2, sizeof(l2), "Def %d", UNIDADE[U[d].tipo].defesa);
+    if (U[d].estado == EU_FORTIFICADA) l += snprintf(l2 + l, sizeof(l2) - l, ", fort.");
+    if (temEdif(k, E_MURALHAS) || temMaravilha(k.civ, W_MURALHA)) snprintf(l2 + l, sizeof(l2) - l, ", muralha");
+  }
+  int lista[16], nd = unidadesEm(k.x, k.y, lista, 16);
+  snprintf(b, sizeof(b), "Eles (%d na cidade):", nd);
+  desenhaLadoAtaque(x0 + 200, y0 + 18, d, b, d >= 0 ? l2 : "", fd, C_VERMELHO);
+  // probabilidade de vencer (o combate é decidido em proporção às forças)
+  int pct = d < 0 ? 100 : fa * 100 / max(1, fa + fd);
+  snprintf(b, sizeof(b), "Hipótese de vitória: %d%%", pct);
+  textoCentro(x0, x1, y0 + 64, b, pct >= 60 ? C_VERDE : pct >= 40 ? C_AMARELO : C_VERMELHO);
+  const int bx0 = x0 + 40, bx1 = x1 - 40, by = y0 + 75;
+  retangulo(bx0, by, bx1, by + 5, C_VERMELHO);
+  retangulo(bx0, by, bx0 + (bx1 - bx0) * pct / 100, by + 5, C_VERDE);
+  canvas.setPenColor(C_PRETO); canvas.drawRectangle(bx0 - 1, by - 1, bx1 + 1, by + 6);
+  if (k.civ > 0 && !emGuerra(jogador, k.civ)) {
+    snprintf(b, sizeof(b), "Em paz com os %s: atacar declara guerra!", nomePovo(k.civ));
+    textoCentro(x0, x1, y0 + 85, b, C_VERMELHO);
+  }
+  const char * op[2] = { d >= 0 ? "Atacar!" : "Ocupar!", "Esperar aqui" };
+  for (int q = 0; q < 2; ++q) {
+    int bx = x0 + 100 + q * 150;
+    retangulo(bx - 6, y1 - 16, bx + 116, y1 - 5, q == ataqueSel ? C_MOLDURA : C_PAINEL);
+    textoCentro(bx - 6, bx + 116, y1 - 15, op[q], q == ataqueSel ? C_AMARELO : C_BRANCO);
+  }
+}
+void abreAtaque(int i, int ci) {
+  ataqueUnid = i; ataqueCid = ci; ataqueSel = 0;
+  ativa = i; ultimaAtiva = i;
+  centraEm(U[i].x, U[i].y);
+  entraModo(M_ATAQUE);
+  desenhaTudo();
+  desenhaAtaque();
+}
+void tentaMover(int d);
+void atualizaAtaque() {
+  bool mudou = false;
+  if (menuEsq() || menuDir() || menuCima() || menuBaixo()) { ataqueSel ^= 1; mudou = true; }
+  if (mudou) { somMenu(); desenhaAtaque(); }
+  bool sim = false, nao = false;
+  if (premiuLetra('S') || premiuLetra('A')) sim = true;
+  if (premiuLetra('N') || premiuLetra('E') || carregouVolta()) nao = true;
+  if (tempo > 10 && carregouFogo()) { if (ataqueSel == 0) sim = true; else nao = true; }
+  if (!sim && !nao) return;
+  somOk();
+  entraModo(M_MAPA);
+  int i = ataqueUnid, ci = ataqueCid;
+  if (sim && U[i].viva && CID[ci].viva) {
+    int d = direcaoPara(U[i].x, U[i].y, CID[ci].x, CID[ci].y);
+    if (d >= 0) {
+      if (CID[ci].civ > 0 && !emGuerra(jogador, CID[ci].civ)) declaraGuerra(jogador, CID[ci].civ);
+      ativa = i;
+      desenhaTudo();
+      tentaMover(d);
+      return;
+    }
+  }
+  desenhaTudo();
+  poeBarra("A unidade espera junto à cidade.", "");
+}
+
+// ---------------- descoberta: o que é a tecnologia e o que permite ----------------
+int tecDescobertaAtual = 0, descobertaSabios = 0;
+// descomprime a ilustração da tecnologia t (RLE) para um buffer em PSRAM e desenha-a com moldura
+void desenhaIlustracao(int t, int x, int y) {
+  static uint8_t * buf = nullptr;
+  if (!buf) buf = (uint8_t *) reserva(ILUS_W * ILUS_H);
+  if (!buf || t < 0 || t >= N_ILUS) return;
+  int p = 0;
+  for (uint32_t i = ilus_inicio[t]; i < ilus_inicio[t + 1] && p < ILUS_W * ILUS_H; i += 2) {
+    int n = ilus_dados[i]; uint8_t c = ilus_dados[i + 1];
+    while (n-- > 0 && p < ILUS_W * ILUS_H) buf[p++] = c;
+  }
+  Bitmap bmp(ILUS_W, ILUS_H, buf, PixelFormat::RGBA2222);
+  retangulo(x - 3, y - 2, x + ILUS_W + 2, y + ILUS_H + 1, C_OURO);
+  canvas.setPenColor(RGB888(85, 0, 0)); canvas.drawRectangle(x - 3, y - 2, x + ILUS_W + 2, y + ILUS_H + 1);
+  canvas.drawBitmap(x, y, &bmp);
+  canvas.waitCompletion(false);                 // o Bitmap é local: esperar que seja desenhado
+}
+void desenhaDescoberta() {
+  const int t = tecDescobertaAtual;
+  char b[120], ano[24];
+  limpaEcra(C_PAINEL);
+  // faixa de cima
+  retangulo(1, 1, ECRA_W - 2, 34, RGB888(0, 0, 85));
+  retangulo(1, 35, ECRA_W - 2, 36, C_OURO);
+  textoCentro(0, ECRA_W - 1, 3, descobertaSabios ? "Os nossos sábios descobriram:" : "Uma nova tecnologia para o nosso povo:", C_CINZA);
+  {
+    char c[64]; int n = converte(TEC[t].nome, c, sizeof(c));
+    int w = 0; for (int i = 0; i < n; ++i) w += 8;
+    textoGrande((ECRA_W - w * 2) / 2 + 2, 14, TEC[t].nome, RGB888(85, 0, 0), 2, 2, &fonte);   // sombra
+    textoGrande((ECRA_W - w * 2) / 2, 13, TEC[t].nome, C_AMARELO, 2, 2, &fonte);
+  }
+  textoAno(ano, turno);
+  texto(8, 3, ano, C_CINZA);
+  snprintf(b, sizeof(b), "%d tecnologias", CIV[jogador].nTecs);
+  textoDireita(ECRA_W - 8, 3, b, C_CINZA);
+  // a ilustração (à esquerda) e o texto da enciclopédia (à direita)
+  desenhaIlustracao(t, 12, 42);
+  int y = max(42 + textoQuebrado(12 + ILUS_W + 12, 43, 54, TEC_TEXTO[t], C_BRANCO) + 4, 42 + ILUS_H + 6);
+  // o que passa a ser possível
+  bool algo = false;
+  int nu = 0;
+  for (int p = 0; p < N_UNIDADES; ++p) if (UNIDADE[p].tec == t) ++nu;
+  if (nu) {
+    texto(12, y, "Novas unidades:", C_AMARELO); y += 10;
+    int k = 0;
+    for (int p = 0; p < N_UNIDADES; ++p) if (UNIDADE[p].tec == t) {
+      int x = 12 + k * 206;
+      if (x + 200 > ECRA_W) break;
+      // a unidade desenhada num escudo com a nossa cor
+      retangulo(x, y, x + TILE_W - 3, y + TILE_H - 2, corCiv(corDe(jogador)));
+      canvas.setPenColor(corCivE(corDe(jogador))); canvas.drawRectangle(x, y, x + TILE_W - 3, y + TILE_H - 2);
+      canvas.drawBitmap(x - 1, y - 1, &BMP_UNI[p]);
+      texto(x + TILE_W + 2, y + 1, UNIDADE[p].nome, C_BRANCO);
+      snprintf(b, sizeof(b), "Ataq %d Def %d Mov %d", UNIDADE[p].ataque, UNIDADE[p].defesa, UNIDADE[p].mov);
+      texto(x + TILE_W + 2, y + 10, b, C_CINZA);
+      ++k;
+    }
+    y += TILE_H + 3; algo = true;
+  }
+  for (int e = 0; e < N_EDIFICIOS_TOTAL; ++e) if (EDIFICIO[e].tec == t && y < 172) {
+    snprintf(b, sizeof(b), "Edifício: %s", EDIFICIO[e].nome);
+    texto(12, y, b, C_VERDE);
+    { char c[80]; int n = converte(b, c, sizeof(c));            // o efeito vai a seguir ao nome, sem se sobrepor
+      int xe = max(12 + 30 * 8, 12 + (n + 2) * 8);
+      if (xe + 8 * (int) strlen(EDIF_EFEITO[e]) > ECRA_W - 8) { y += 9; xe = 12 + 4 * 8; }
+      texto(xe, y, EDIF_EFEITO[e], C_CINZA); }
+    y += 10; algo = true;
+  }
+  for (int w = 0; w < N_MARAVILHAS; ++w) if (MARAVILHA[w].tec == t && y < 172) {
+    snprintf(b, sizeof(b), "Maravilha: %s", MARAVILHA[w].nome);
+    texto(12, y, b, C_OURO);
+    { char c[80]; int n = converte(b, c, sizeof(c));            // o efeito vai a seguir ao nome, sem se sobrepor
+      int xe = max(12 + 30 * 8, 12 + (n + 2) * 8);
+      if (xe + 8 * (int) strlen(MARAVILHA[w].efeito) > ECRA_W - 8) { y += 9; xe = 12 + 4 * 8; }
+      texto(xe, y, MARAVILHA[w].efeito, C_CINZA); }
+    y += 10; algo = true;
+  }
+  for (int g = G_DESPOTISMO + 1; g < N_GOVERNOS; ++g) if (GOVERNO[g].tec == t && y < 172) {
+    snprintf(b, sizeof(b), "Governo: %s (menu do jogo, Revolução)", GOVERNO[g].nome);
+    texto(12, y, b, C_CEU);
+    y += 10; algo = true;
+  }
+  if (!algo && y < 172) { texto(12, y, "Abre caminho a novas descobertas.", C_CINZA); y += 10; }
+  // o que se pode estudar a seguir graças a ela
+  int p = snprintf(b, sizeof(b), "Leva a:");
+  int n = 0;
+  for (int q = 0; q < N_TECS; ++q) if (TEC[q].pre1 == t || TEC[q].pre2 == t) {
+    if (p > 70) break;
+    p += snprintf(b + p, sizeof(b) - p, "%s %s", n ? "," : "", TEC[q].nome);
+    ++n;
+  }
+  if (n) texto(12, 177, b, C_CINZA);
+  textoDireita(ECRA_W - 8, 188, "ESPAÇO: continuar", C_CINZA);
+  moldura();
+}
+void abreDescoberta(int t, int sabios) {
+  tecDescobertaAtual = t; descobertaSabios = sabios;
+  entraModo(M_DESCOBERTA);
+  somTri(523, 200, 60); somTri(659, 200, 60); somTri(784, 300, 80);
+  desenhaDescoberta();
+}
+void atualizaDescoberta() {
+  if (tempo > 10 && (carregouFogo() || carregouVolta())) {
+    somOk();
+    entraModo(M_MAPA);
+    desenhaTudo();
+    continuaTurno();
+  }
+}
+
 // o que falta mostrar no início do turno: mensagens, propostas, pesquisa, produção
 void continuaTurno() {
   if (nMsg > 0) { mostraMensagens(); return; }
+  if (nCenas > 0) {
+    CenaPendente c = cenasPendentes[0];
+    --nCenas;
+    for (int k = 0; k < nCenas; ++k) cenasPendentes[k] = cenasPendentes[k + 1];
+    abreCena(c.tipo, c.a, c.c, c.b);
+    return;
+  }
   while (encontrosPendentes) {
     int c = 0;
     while (!(encontrosPendentes >> c & 1)) ++c;
     encontrosPendentes &= ~(1 << c);
     if (c > 0 && c != jogador && CIV[c].viva) { abreEncontro(c); return; }
+  }
+  if (nTecsNovas > 0) {
+    int t = tecsNovas[0], sab = tecsNovasSabios[0];
+    --nTecsNovas;
+    for (int k = 0; k < nTecsNovas; ++k) { tecsNovas[k] = tecsNovas[k + 1]; tecsNovasSabios[k] = tecsNovasSabios[k + 1]; }
+    if (sab) abreCena(CN_DESCOBERTA, t, 0, 0);      // os sábios no gabinete; a seguir, a janela da descoberta
+    else abreDescoberta(t, sab);
+    return;
+  }
+  for (int k = 0; k < nChegadas; ++k) {
+    int i = chegouUnid[k], ci = chegouCid[k];
+    // já não serve: a unidade morreu, saiu dali, ou a cidade mudou de dono
+    if (!U[i].viva || U[i].civ != jogador || !CID[ci].viva || CID[ci].civ == jogador || direcaoPara(U[i].x, U[i].y, CID[ci].x, CID[ci].y) < 0) { tiraChegada(k); --k; continue; }
+    if (U[i].mov == 0) continue;                       // ataca no próximo turno
+    tiraChegada(k);
+    abreAtaque(i, ci);
+    return;
   }
   if (proposta != PR_NADA) {
     TipoProposta p = proposta;
@@ -1396,19 +2148,287 @@ void entraTitulo();
 void desenhaNovoJogo();
 uint8_t passoNovo = 0;
 
+// ---------------- listas de gravações ----------------
+void juntaGravacao(int k, bool vazias) {
+  Cabecalho c;
+  char t[64], d[16], n[12];
+  if (k == GRAV_AUTO) strcpy(n, "Auto:"); else if (k == GRAV_ANTIGA) strcpy(n, "Antiga:"); else snprintf(n, sizeof(n), "%d.", (k + 1) % 100);
+  if (leCabecalho(k, c)) {
+    char desc[48]; descreveGravacao(c, desc, sizeof(desc), d, sizeof(d));
+    snprintf(t, sizeof(t), "%s %s", n, desc);
+    juntaItem(t, k, true, d);
+  } else if (vazias) {
+    snprintf(t, sizeof(t), "%s (vazia)", n);
+    juntaItem(t, k, true);
+  }
+}
+void abreGravar() {
+  if (!montaSD()) { poeBarra("Não foi possível gravar: o cartão SD não responde.", ""); somErro(); return; }
+  modoAntesLista = M_MAPA;
+  limpaLista("Gravar o jogo: em que posição?", L_GRAVAR);
+  for (int k = 0; k < N_GRAVACOES; ++k) juntaGravacao(k, true);
+  if (ultimaGravacao >= 0) itemSel = ultimaGravacao;
+  strcpy(ajudaLista, "ESPAÇO: gravar aqui   ESC: cancelar");
+  listaX0 = 80; listaW = 400; listaLinhas = 12;
+  entraModo(M_LISTA);
+  desenhaLista();
+}
+void abreCarregar() {
+  modoAntesLista = M_TITULO;
+  limpaLista("Carregar um jogo gravado", L_CARREGAR);
+  for (int k = 0; k < N_GRAVACOES; ++k) juntaGravacao(k, false);
+  juntaGravacao(GRAV_AUTO, false);
+  juntaGravacao(GRAV_ANTIGA, false);
+  if (nItens == 0) { entraTitulo(); return; }
+  strcpy(ajudaLista, "ESPAÇO: carregar   ESC: voltar");
+  listaX0 = 120; listaW = 400; listaLinhas = 13;
+  limpaEcra(C_PRETO);
+  entraModo(M_LISTA);
+  desenhaLista();
+}
+
+// ---------------- criar o mundo (como no original: terra, clima, temperatura, idade; e mais o tamanho,
+// as ilhas e os recursos) com uma pré-visualização do mapa ----------------
+const int N_LINHAS_MUNDO = 10;     // 7 opções + outro mundo + ao acaso + começar
+int linhaMundo = 9;
+const char * const NOME_TAM[4]   = { "Pequeno (64x40)", "Normal (80x50)", "Grande (96x60)", "Enorme (112x70)" };
+const char * const NOME_TERRA[3] = { "Pequena", "Normal", "Grande" };
+const char * const NOME_ILHAS[3] = { "Poucas: continentes", "Normal", "Muitas: arquipélagos" };
+const char * const NOME_CLIMA[3] = { "Árido (desertos)", "Normal", "Húmido (selvas)" };
+const char * const NOME_TEMP[3]  = { "Fria", "Temperada", "Quente" };
+const char * const NOME_IDADE[3] = { "3 mil milhões", "4 mil milhões", "5 mil milhões" };
+const char * const NOME_REC[3]   = { "Poucos", "Normais", "Muitos" };
+uint8_t * campoMundo(int l) {
+  switch (l) {
+    case 0: return &mundo.tamanho; case 1: return &mundo.terra; case 2: return &mundo.ilhas; case 3: return &mundo.clima;
+    case 4: return &mundo.temperatura; case 5: return &mundo.idade; case 6: return &mundo.recursos;
+  }
+  return nullptr;
+}
+int nValoresMundo(int l) { return l == 0 ? 4 : 3; }
+const char * textoMundo(int l) {
+  switch (l) {
+    case 0: return NOME_TAM[mundo.tamanho % 4]; case 1: return NOME_TERRA[mundo.terra % 3]; case 2: return NOME_ILHAS[mundo.ilhas % 3];
+    case 3: return NOME_CLIMA[mundo.clima % 3]; case 4: return NOME_TEMP[mundo.temperatura % 3]; case 5: return NOME_IDADE[mundo.idade % 3];
+    case 6: return NOME_REC[mundo.recursos % 3];
+  }
+  return "";
+}
+void geraPrevisao() {
+  poeTamanhoMapa(TAM_W[mundo.tamanho % 4], TAM_H[mundo.tamanho % 4]);
+  geraMundo(sementeEscolhida);
+}
+void desenhaOpcoesMundo() {
+  static const char * const ROT[N_LINHAS_MUNDO] = { "Tamanho do mapa", "Massa de terra", "Ilhas", "Clima", "Temperatura",
+                                                     "Idade do mundo", "Recursos", "Outro mundo", "Tudo ao acaso", "Começar!" };
+  retangulo(4, 16, 300, 196, C_PAINEL);
+  for (int l = 0; l < N_LINHAS_MUNDO; ++l) {
+    int y = 22 + l * 16 + (l >= 7 ? 6 : 0);
+    bool sel = l == linhaMundo;
+    if (sel) retangulo(8, y - 2, 296, y + 9, C_MOLDURA);
+    texto(14, y, ROT[l], sel ? C_AMARELO : (l >= 7 ? C_CEU : C_BRANCO));
+    if (l < 7) {
+      char b[40]; snprintf(b, sizeof(b), "< %s >", textoMundo(l));
+      textoDireita(292, y, b, sel ? C_AMARELO : C_CINZA);
+    }
+  }
+}
+void desenhaPrevisaoMundo() {
+  // o mapa todo na área da direita, com a proporção certa
+  const int X0 = 312, Y0 = 22, W = 316, H = 118;
+  retangulo(X0 - 2, Y0 - 2, X0 + W + 1, Y0 + H + 1, C_PRETO);
+  int w = W, h = W * MAPA_H * 10 / (MAPA_W * 24);      // píxeis altos: 1 linha = 2,4 colunas
+  if (h > H) { h = H; w = H * MAPA_W * 24 / (MAPA_H * 10); }
+  desenhaMundoPequeno(X0 + (W - w) / 2, Y0 + (H - h) / 2, w, h, false);
+  // contas do terreno
+  int n[N_TERRENOS] = {}, terra = 0;
+  for (int i = 0; i < MAPA_N; ++i) { int t = mapaTer[i] & 15; ++n[t]; if (t != T_OCEANO) ++terra; }
+  auto pct = [&](int t) { return terra ? n[t] * 100 / terra : 0; };
+  char b[96];
+  retangulo(X0 - 2, 146, ECRA_W - 5, 196, C_PAINEL);
+  snprintf(b, sizeof(b), "Terra %d%% do mapa   Massas de terra: %d", terra * 100 / MAPA_N, marcaContinentes());
+  texto(X0, 148, b, C_BRANCO);
+  snprintf(b, sizeof(b), "Prado %d%%  Planície %d%%  Deserto %d%%", pct(T_PRADO) + pct(T_RIO), pct(T_PLANICIE), pct(T_DESERTO));
+  texto(X0, 160, b, C_VERDE);
+  snprintf(b, sizeof(b), "Floresta %d%%  Selva %d%%  Pântano %d%%", pct(T_FLORESTA), pct(T_SELVA), pct(T_PANTANO));
+  texto(X0, 170, b, C_VERDE);
+  snprintf(b, sizeof(b), "Colinas %d%%  Montanhas %d%%  Frio %d%%", pct(T_COLINAS), pct(T_MONTANHAS), pct(T_TUNDRA) + pct(T_ARTICO));
+  texto(X0, 180, b, C_CINZA);
+}
+void desenhaMundo() {
+  limpaEcra(C_PAINEL);
+  textoCentro(0, ECRA_W - 1, 3, "Criar o mundo", C_AMARELO);
+  canvas.setPenColor(C_MOLDURA); canvas.drawLine(1, 13, ECRA_W - 2, 13);
+  desenhaOpcoesMundo();
+  desenhaPrevisaoMundo();
+  textoDireita(ECRA_W - 8, 3, "Setas: mudar   ENTER: começar", C_CINZA);
+  moldura();
+}
+void abreMundo() {
+  sementeEscolhida = (millis() * 2654435761UL + 12345) | 1;
+  linhaMundo = 9;
+  entraModo(M_MUNDO);
+  limpaEcra(C_PAINEL);
+  textoCentro(0, ECRA_W - 1, 90, "A criar o mundo...", C_AMARELO);
+  canvas.waitCompletion(false);
+  geraPrevisao();
+  desenhaMundo();
+}
+void abrePovos() {
+  limpaLista("Escolhe o teu povo", L_POVO);
+  for (int p = 0; p < N_POVOS; ++p) juntaItem(POVO[p].nome, p, true, POVO[p].lider);
+  listaX0 = 140; listaW = 360; listaLinhas = 15;
+  limpaEcra(C_PRETO);
+  entraModo(M_LISTA);
+  modoAntesLista = M_TITULO;
+  desenhaLista();
+}
+void atualizaMundo() {
+  if (menuCima())  { linhaMundo = (linhaMundo + N_LINHAS_MUNDO - 1) % N_LINHAS_MUNDO; somMenu(); desenhaOpcoesMundo(); moldura(); }
+  if (menuBaixo()) { linhaMundo = (linhaMundo + 1) % N_LINHAS_MUNDO; somMenu(); desenhaOpcoesMundo(); moldura(); }
+  int d = menuEsq() ? -1 : menuDir() ? 1 : 0;
+  uint8_t * c = campoMundo(linhaMundo);
+  bool refaz = false;
+  if (d && c) { int n = nValoresMundo(linhaMundo); *c = (*c + n + d) % n; refaz = true; }
+  if (carregouVolta()) { entraTitulo(); return; }
+  if (carregouFogo()) {
+    if (linhaMundo == 7) { sementeEscolhida = aleat() | 1; refaz = true; }              // outro mundo, as mesmas opções
+    else if (linhaMundo == 8) {                                                          // tudo ao acaso
+      mundo.tamanho = aleat(4); mundo.terra = aleat(3); mundo.ilhas = aleat(3); mundo.clima = aleat(3);
+      mundo.temperatura = aleat(3); mundo.idade = aleat(3); mundo.recursos = aleat(3);
+      sementeEscolhida = aleat() | 1; refaz = true;
+    } else { somOk(); abrePovos(); return; }                                              // começar (ENTER em qualquer opção)
+  }
+  if (refaz) {
+    somMenu();
+    desenhaOpcoesMundo();
+    textoCentro(310, ECRA_W - 4, 74, "a criar...", C_AMARELO);
+    canvas.waitCompletion(false);
+    uint32_t r = rngEstado;
+    geraPrevisao();
+    rngEstado = r ^ millis();
+    desenhaPrevisaoMundo();
+    moldura();
+  }
+}
+
+// ---------------- o nome do jogador (como no original) ----------------
+char nomeEdit[24];
+int nomeCidadeAlvo = -1;            // M_NOME: -1 = nome do jogador; >= 0 = nome da cidade acabada de fundar
+int caixaNomeX = 180, caixaNomeY = 132;
+void desenhaCaixaNome() {
+  caixa(caixaNomeX, caixaNomeY, caixaNomeX + 280, caixaNomeY + 16, C_PRETO, C_MOLDURA);
+  retangulo(caixaNomeX + 4, caixaNomeY + 3, caixaNomeX + 276, caixaNomeY + 13, C_PRETO);
+  texto(caixaNomeX + 10, caixaNomeY + 4, nomeEdit, C_AMARELO);
+  if ((frame / 15) & 1) { int w = letras(nomeEdit) * 8; retangulo(caixaNomeX + 10 + w, caixaNomeY + 11, caixaNomeX + 16 + w, caixaNomeY + 12, C_AMARELO); }
+}
+// ---- nome de uma cidade nova: sugere-se um nome, que se pode mudar na hora ----
+void desenhaNomeCidade() {
+  desenhaTudo();
+  caixa(100, 56, 540, 132, C_PAINEL, C_OURO);
+  textoCentro(100, 540, 62, "Fundámos uma nova cidade!", C_AMARELO);
+  char b[80], ano[24]; textoAno(ano, turno);
+  snprintf(b, sizeof(b), "Ano %s: que nome lhe damos?", ano);
+  textoCentro(100, 540, 76, b, C_BRANCO);
+  caixaNomeX = 180; caixaNomeY = 92;
+  desenhaCaixaNome();
+  textoCentro(100, 540, 116, "Escreve o nome (até 15 letras).  ENTER: fundar", C_CINZA);
+  moldura();
+}
+void abreNomeCidade(int ci) {
+  nomeCidadeAlvo = ci;
+  strncpy(nomeEdit, CID[ci].nome, sizeof(nomeEdit) - 1); nomeEdit[sizeof(nomeEdit) - 1] = 0;
+  entraModo(M_NOME);
+  desenhaNomeCidade();
+}
+void acabaNomeCidade() {
+  int ci = nomeCidadeAlvo;
+  nomeCidadeAlvo = -1;
+  caixaNomeX = 180; caixaNomeY = 132;
+  // tira os espaços das pontas; vazio = fica o nome sugerido
+  char * p = nomeEdit; while (*p == ' ') ++p;
+  int n = strlen(p); while (n > 0 && p[n - 1] == ' ') p[--n] = 0;
+  if (n > 0 && ci >= 0) {
+    char novo[sizeof(CID[ci].nome)];
+    snprintf(novo, sizeof(novo), "%s", p);
+    strcpy(CID[ci].nome, novo);
+  }
+  if (ci >= 0 && CID[ci].viva) abreProducao(ci, "Nova cidade! O que vamos fazer?");
+  else { entraModo(M_MAPA); desenhaTudo(); }
+}
+void desenhaNome() {
+  limpaEcra(C_PAINEL);
+  char b[96];
+  textoCentro(0, ECRA_W - 1, 4, "Um novo povo entra na história", C_AMARELO);
+  // o retrato do líder do povo escolhido
+  retangulo(238, 18, 401, 104, C_OURO);
+  retangulo(240, 20, 399, 103, RGB888(85, 0, 0));
+  desenhaArte(240, 20, dadosRetrato(povoEscolhido % N_RETRATOS), RETRATO_W, RETRATO_H);
+  snprintf(b, sizeof(b), "Como te chamas, líder dos %s?", POVO[povoEscolhido].nome);
+  textoCentro(0, ECRA_W - 1, 116, b, C_BRANCO);
+  desenhaCaixaNome();
+  textoCentro(0, ECRA_W - 1, 160, "Escreve o nome e carrega em ENTER (até 23 letras).", C_CINZA);
+  textoCentro(0, ECRA_W - 1, 172, "O nome aparece nas gravações, como no original.", C_CINZA);
+  moldura();
+}
+void abreNome() {
+  nomeCidadeAlvo = -1; caixaNomeX = 180; caixaNomeY = 132;
+  strncpy(nomeEdit, POVO[povoEscolhido].lider, sizeof(nomeEdit) - 1); nomeEdit[sizeof(nomeEdit) - 1] = 0;
+  // não cortar uma letra acentuada a meio
+  int n = strlen(nomeEdit); while (n > 0 && ((uint8_t)nomeEdit[n - 1] & 0xC0) == 0xC0) nomeEdit[--n] = 0;
+  entraModo(M_NOME);
+  desenhaNome();
+}
+void comecaJogoNovo() {
+  strncpy(nomeJogador, nomeEdit, sizeof(nomeJogador) - 1); nomeJogador[sizeof(nomeJogador) - 1] = 0;
+  if (!nomeJogador[0]) strncpy(nomeJogador, POVO[povoEscolhido].lider, sizeof(nomeJogador) - 1);
+  ultimaGravacao = -1;
+  limpaEcra(C_PRETO);
+  textoCentro(0, ECRA_W - 1, 90, "A criar o mundo...", C_AMARELO);
+  canvas.waitCompletion(false);
+  novoJogo();
+  char b[300];
+  snprintf(b, sizeof(b), "No ano 4000 a.C., o povo dos %s, guiado por %s, deixa a vida de nómadas e procura um lugar para a primeira cidade. "
+           "Usa os colonos para fundar cidades (B), faz crescer o império, descobre tecnologias e constrói maravilhas. "
+           "Conquista o mundo, ou chega primeiro às estrelas.",
+           POVO[povoEscolhido].nome, nomeJogador);
+  mensagem("%s", b);
+  TOCA(MUS_TITULO, BAI_TITULO, 120, false);
+  comecaTurnoJogador();
+}
+void atualizaNome() {
+  bool mudou = false;
+  int n = strlen(nomeEdit);
+  for (int i = 0; i < nTeclas; ++i) {
+    VirtualKey vk = filaTeclas[i];
+    if (vk == VK_RETURN || vk == VK_KP_ENTER) { somOk(); if (nomeCidadeAlvo >= 0) acabaNomeCidade(); else comecaJogoNovo(); return; }
+    if (vk == VK_ESCAPE) {
+      if (nomeCidadeAlvo >= 0) { strncpy(nomeEdit, CID[nomeCidadeAlvo].nome, sizeof(nomeEdit) - 1); acabaNomeCidade(); }   // fica o sugerido
+      else entraTitulo();
+      return;
+    }
+    if (vk == VK_BACKSPACE || vk == VK_DELETE) {
+      while (n > 0 && ((uint8_t)nomeEdit[n - 1] & 0xC0) == 0x80) --n;      // continuação de UTF-8
+      if (n > 0) --n;
+      nomeEdit[n] = 0; mudou = true;
+      continue;
+    }
+    int a = kb ? kb->virtualKeyToASCII(vk) : -1;
+    const int maxN = nomeCidadeAlvo >= 0 ? (int)sizeof(CID[0].nome) - 1 : (int)sizeof(nomeEdit) - 1;
+    if (n == 0 && a >= 'a' && a <= 'z') a -= 32;              // a primeira letra vai em maiúscula
+    if (a >= 32 && a < 127 && n < maxN) { nomeEdit[n++] = (char)a; nomeEdit[n] = 0; mudou = true; }
+  }
+  if (joyFogo()) { somOk(); if (nomeCidadeAlvo >= 0) acabaNomeCidade(); else comecaJogoNovo(); return; }
+  if (mudou) somMenu();
+  if (mudou || tempo % 15 == 0) desenhaCaixaNome();
+}
+
 void escolhaLista(int s) {
   int v = s >= 0 ? itens[s].valor : -1;
   switch (idLista) {
     case L_TITULO:
       if (s < 0) { entraTitulo(); return; }
-      if (v == 1 && carregaJogo()) {
-        ativa = -1; ultimaAtiva = -1;
-        proximaUnidade();
-        if (ativa >= 0) centraEm(U[ativa].x, U[ativa].y);
-        else if (CIV[jogador].capital != SEM) centraEm(CID[CIV[jogador].capital].x, CID[CIV[jogador].capital].y);
-        TOCA(MUS_TITULO, BAI_TITULO, 120, false);
-        entraModo(M_MAPA); desenhaTudo(); continuaTurno(); return;
-      }
+      if (v == 1) { abreCarregar(); return; }
       limpaLista("Nível de dificuldade", L_DIFICULDADE);
       for (int d = 0; d < N_DIFICULDADES; ++d) juntaItem(DIFICULDADE[d], d);
       itemSel = 1;
@@ -1427,36 +2447,48 @@ void escolhaLista(int s) {
     case L_NCIVS:
       if (s < 0) { entraTitulo(); return; }
       nCivsJogo = v;
-      limpaLista("Escolhe o teu povo", L_POVO);
-      for (int p = 0; p < N_POVOS; ++p) juntaItem(POVO[p].nome, p, true, POVO[p].lider);
-      listaX0 = 140; listaW = 360; listaLinhas = 15;
-      desenhaLista();
+      abreMundo();
       return;
     case L_POVO: {
       if (s < 0) { entraTitulo(); return; }
       povoEscolhido = v;
-      limpaEcra(C_PRETO);
-      textoCentro(0, ECRA_W - 1, 90, "A criar o mundo...", C_AMARELO);
-      canvas.waitCompletion(false);
-      novoJogo();
-      char b[300];
-      snprintf(b, sizeof(b), "No ano 4000 a.C., o povo dos %s, guiado por %s, deixa a vida de nómadas e procura um lugar para a primeira cidade. "
-               "Usa os colonos para fundar cidades (B), faz crescer o império, descobre tecnologias e constrói maravilhas. "
-               "Conquista o mundo, ou chega primeiro às estrelas.",
-               POVO[povoEscolhido].nome, POVO[povoEscolhido].lider);
-      mensagem("%s", b);
-      TOCA(MUS_TITULO, BAI_TITULO, 120, false);
-      comecaTurnoJogador();
+      abreNome();
       return;
     }
+    case L_GRAVAR:
+      entraModo(M_MAPA); desenhaTudo();
+      if (s >= 0) poeBarra(gravaJogo(v) ? "Jogo gravado no cartão SD." : "Não foi possível gravar: o cartão SD não responde.", "");
+      return;
+    case L_CARREGAR:
+      if (s < 0) { entraTitulo(); return; }
+      if (carregaJogo(v)) {
+        ativa = -1; ultimaAtiva = -1;
+        nChegadas = 0; nTecsNovas = 0; encontrosPendentes = 0; nMsg = 0; nPedeProducao = 0; nCenas = 0;
+        noTitulo = false; { int n = CIV[jogador].nTecs; epocaMusical = n < 15 ? 0 : n < 35 ? 1 : n < 55 ? 2 : 3; }
+        proximaUnidade();
+        if (ativa >= 0) centraEm(U[ativa].x, U[ativa].y);
+        else if (CIV[jogador].capital != SEM) centraEm(CID[CIV[jogador].capital].x, CID[CIV[jogador].capital].y);
+        TOCA(MUS_TITULO, BAI_TITULO, 120, false);
+        entraModo(M_MAPA); desenhaTudo(); poeBarra("", ""); continuaTurno(); return;
+      }
+      entraTitulo(); return;
     case L_PRODUCAO:
       if (s >= 0 && cidadeAtual >= 0) {
         Cidade & k = CID[cidadeAtual];
         // mudar entre unidades, edifícios e maravilhas custa metade do que já estava feito (como no original)
         int antes = k.prod < PROD_EDIF ? 0 : k.prod < PROD_MARAV ? 1 : 2;
         int depois = v < PROD_EDIF ? 0 : v < PROD_MARAV ? 1 : 2;
-        if (antes != depois && k.escudos > 0) k.escudos /= 2;
-        k.prod = v;
+        if (v == PROD_AUTO) {
+          k.fundada |= CID_AUTO;
+          int velho = k.prod;
+          escolheProducaoIA(cidadeAtual);
+          int d2 = k.prod < PROD_EDIF ? 0 : k.prod < PROD_MARAV ? 1 : 2;
+          if (antes != d2 && k.prod != velho && k.escudos > 0) k.escudos /= 2;
+        } else {
+          k.fundada &= ~CID_AUTO;
+          if (antes != depois && k.escudos > 0) k.escudos /= 2;
+          k.prod = v;
+        }
       }
       if (modoAntesLista == M_CIDADE) { entraModo(M_CIDADE); desenhaCidade(); return; }
       entraModo(M_MAPA); desenhaTudo(); continuaTurno(); return;
@@ -1475,10 +2507,17 @@ void escolhaLista(int s) {
         case MN_REVOLUCAO: abreGoverno(); return;
         case MN_DIPLOMACIA: abreDiplomacia(); return;
         case MN_CIDADES: abreListaCidades(); return;
+        case MN_DORMIR: abreDormir(); return;
         case MN_CIENCIA: case MN_POVOS: case MN_MARAVILHAS: case MN_PONTOS: abreRelatorio(v); return;
         case MN_NAVE: desenhaTudo(); pergunta(Q_NAVE, "Lançar a nave com %d estruturas, %d componentes e %d módulos?", CIV[jogador].nave[0], CIV[jogador].nave[1], CIV[jogador].nave[2]); return;
-        case MN_GRAVAR: desenhaTudo(); poeBarra(gravaJogo() ? "Jogo gravado no cartão SD." : "Não foi possível gravar.", ""); return;
+        case MN_GRAVAR: desenhaTudo(); abreGravar(); return;
         case MN_MUSICA: musicaPermitida = !musicaPermitida; desenhaTudo(); return;
+        case MN_INIMIGOS:
+          verInimigos = !verInimigos;
+          abreMenu();
+          for (int k = 0; k < nItens; ++k) if (itens[k].valor == MN_INIMIGOS) itemSel = k;   // o cursor fica na opção
+          desenhaLista();
+          return;
         case MN_SAIR: desenhaTudo(); pergunta(Q_SAIR, "Sair para o título? (o que não estiver gravado perde-se)"); return;
       }
       desenhaTudo(); return;
@@ -1490,6 +2529,30 @@ void escolhaLista(int s) {
         else mensagem("O governo passa a ser: %s.", GOVERNO[v].nome);
       }
       entraModo(M_MAPA); desenhaTudo(); continuaTurno(); return;
+    case L_IR_CIDADE:
+      if (s < 0) {      // volta a escolher no mapa
+        entraModo(M_DESTINO); desenhaTudo();
+        poeBarra("Ir para: escolhe o destino com as setas e ESPAÇO.", "C: lista das nossas cidades.  ESC: cancelar.");
+        return;
+      }
+      modoVer = false;
+      entraModo(M_MAPA);
+      if (ativa >= 0 && U[ativa].viva) {
+        Unidade & u = U[ativa];
+        u.gx = CID[v].x; u.gy = CID[v].y; u.estado = EU_DESTINO;
+        segueDestino(ativa);
+        proximaUnidade();
+      }
+      poeBarra("", "");
+      if (nMsg) { desenhaTudo(); mostraMensagens(); return; }
+      desenhaTudo();
+      return;
+    case L_DORMIR:
+      if (s >= 0) { somOk(); acordaDormir(v); return; }
+      entraModo(M_MAPA); desenhaTudo(); return;
+    case L_ALVOS:
+      if (s >= 0) { marchaPara(v); return; }
+      entraModo(M_MAPA); desenhaTudo(); return;
     case L_CIDADES:
       if (s >= 0) { centraEm(CID[v].x, CID[v].y); abreCidade(v); return; }
       entraModo(M_MAPA); desenhaTudo(); return;
@@ -1583,6 +2646,7 @@ void escolhaLista(int s) {
 }
 
 void atualizaListaModo() {
+  if (idLista == L_PRODUCAO && premiuLetra('A')) { somOk(); escolhaLista(0); return; }   // Auto
   int s = atualizaLista();
   if (s == -1) return;
   escolhaLista(s == -2 ? -1 : s);
@@ -1591,18 +2655,8 @@ void atualizaListaModo() {
 // ---------------- título ----------------
 void desenhaTitulo() {
   limpaEcra(C_PRETO);
-  // um mundo de fundo (2x1 por casa, ampliado 4x2)
-  for (int y = 0; y < MAPA_H; ++y) {
-    int x = 0;
-    while (x < MAPA_W) {
-      uint8_t t = terreno(x, y);
-      int x2 = x + 1;
-      while (x2 < MAPA_W && terreno(x2, y) == t) ++x2;
-      canvas.setBrushColor(corMinimapa(t));
-      canvas.fillRectangle(160 + x * 4, 64 + y * 2, 160 + x2 * 4 - 1, 64 + y * 2 + 1);
-      x = x2;
-    }
-  }
+  // um mundo de fundo
+  desenhaMundoPequeno(160, 64, 320, 100, false);
   textoGrande(176 + 4, 8 + 3, "IMPÉRIOS", C_PRETO, 4, 3, &fabgl::FONT_8x16);
   textoGrande(176, 8, "IMPÉRIOS", C_OURO, 4, 3, &fabgl::FONT_8x16);
   textoCentro(0, ECRA_W - 1, 50, "Constrói uma civilização que resista ao tempo", C_BRANCO);
@@ -1611,13 +2665,18 @@ void desenhaTitulo() {
 
 void entraTitulo() {
   ativa = -1; modoVer = false;
+  OpcoesMundo antes = mundo;
+  mundo = { 1, 1, 1, 1, 1, 1, 1 };
+  poeTamanhoMapa(80, 50);
   geraMundo(millis() | 1);
+  mundo = antes;
   memset(mapaVis, 0xFF, MAPA_N);
   desenhaTitulo();
-  TOCA(MUS_TITULO, BAI_TITULO, 120, true);
+  noTitulo = true;
+  TOCA(MUS_TITULO, BAI_TITULO, 120, false);
   limpaLista("", L_TITULO);
   juntaItem("Novo jogo", 0);
-  if (haJogoGravado()) juntaItem("Continuar o jogo gravado", 1);
+  if (haJogoGravado()) juntaItem("Carregar um jogo gravado", 1);
   listaX0 = 190; listaW = 260; listaLinhas = 3;
   listaY0 = 128;                    // a escolha fica por cima do mundo, em baixo
   entraModo(M_LISTA);
@@ -1634,14 +2693,15 @@ void desenhaFim() {
   textoAno(ano, turno);
   bool vit = fimDeJogo == 1;
   const char * titulo = vit ? "Vitória!" : "Fim da civilização";
-  textoGrande((ECRA_W - letras(titulo) * 32) / 2, 16, titulo, C_OURO, 4, 3, &fabgl::FONT_8x16);
-  if (!CIV[jogador].viva) snprintf(b, sizeof(b), "Os %s foram varridos da história em %s.", nomePovo(jogador), ano);
+  textoGrande((ECRA_W - letras(titulo) * 32) / 2, 16, titulo, C_OURO, 4, 4, &fonte);   // a fonte do jogo tem os acentos
+  if (!CIV[jogador].viva) snprintf(b, sizeof(b), "Os %s foram varridos da história em %s%s", nomePovo(jogador), ano,
+                                   ano[0] && ano[strlen(ano) - 1] == '.' ? "" : ".");
   else {
     bool outros = false;
     for (int c = 1; c < N_CIVS; ++c) if (c != jogador && CIV[c].viva) outros = true;
     int nave = -1;
     for (int c = 1; c < N_CIVS; ++c) if (CIV[c].viva && CIV[c].naveChega && turno >= CIV[c].naveChega) nave = c;
-    if (!outros) snprintf(b, sizeof(b), "Em %s, os %s dominam o mundo inteiro. %s é o senhor de toda a Terra!", ano, nomePovo(jogador), POVO[CIV[jogador].povo].lider);
+    if (!outros) snprintf(b, sizeof(b), "Em %s, os %s dominam o mundo inteiro. %s é o senhor de toda a Terra!", ano, nomePovo(jogador), nomeLider(jogador));
     else if (nave == jogador) snprintf(b, sizeof(b), "Em %s, a nave dos %s chegou a Alfa do Centauro. Uma nova era começa entre as estrelas!", ano, nomePovo(jogador));
     else if (nave > 0) snprintf(b, sizeof(b), "Em %s, a nave dos %s chegou a Alfa do Centauro. O futuro é deles.", ano, nomePovo(nave));
     else snprintf(b, sizeof(b), "Chegou o ano %s e a história termina aqui. A tua civilização tem %d pontos.", ano, calculaPontos(jogador));
@@ -1651,7 +2711,6 @@ void desenhaFim() {
   textoCentro(0, ECRA_W - 1, 130, b, C_OURO);
   textoCentro(0, ECRA_W - 1, 180, "ESPAÇO", C_CINZA);
   if (vit) TOCA(MUS_VITORIA, BAI_VITORIA, 110, false); else TOCA(MUS_DERROTA, BAI_DERROTA, 140, false);
-  if (temSD) SD.remove(FICHEIRO);
 }
 void atualizaFim() { if (tempo > 60 && carregouFogo()) entraTitulo(); }
 

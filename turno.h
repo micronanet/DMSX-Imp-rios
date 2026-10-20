@@ -48,6 +48,8 @@ bool estrangeiroAoLado(int civ, int x, int y) {
 
 void eliminaPovoSeAcabou(int civ);
 void lancaNuclear(int i, int x, int y);
+// mostra no mapa o movimento (fase 0) ou o ataque (1 antes, 2 depois) de uma unidade de outro povo (jogo.h)
+void animaIA(int i, int civ, int ox, int oy, int nx, int ny, int fase);
 
 // tenta mover a unidade i na direção d; devolve o resultado
 ResMov moveUnidade(int i, int d, bool forcaGuerra = false) {
@@ -73,7 +75,10 @@ ResMov moveUnidade(int i, int d, bool forcaGuerra = false) {
     if (I.dominio == D_TERRA && mar) return MV_BLOQUEADO;                    // nem para o mar
     if (I.flags & U_NUCLEAR) { lancaNuclear(i, nx, ny); return MV_DESTRUIU; }
     CIV[u.civ].contacto |= 1 << outro; CIV[outro].contacto |= 1 << u.civ;
+    const int civAtaca = u.civ, ax = u.x, ay = u.y;
+    animaIA(i, civAtaca, ax, ay, nx, ny, 1);
     bool g = combate(i, nx, ny);
+    animaIA(i, civAtaca, ax, ay, nx, ny, 2);
     if (g && outro > 0) eliminaPovoSeAcabou(outro);
     return g ? MV_GANHOU : MV_PERDEU;
   }
@@ -88,7 +93,9 @@ ResMov moveUnidade(int i, int d, bool forcaGuerra = false) {
     if (!emGuerra(u.civ, dono)) declaraGuerra(u.civ, dono);
     if (eOceano(u.x, u.y)) return MV_BLOQUEADO;
     capturaCidade(ci, u.civ);
+    const int cx0 = u.x, cy0 = u.y;
     u.x = nx; u.y = ny; u.mov = 0; u.estado = EU_NADA;
+    animaIA(i, u.civ, cx0, cy0, nx, ny, 0);
     if (u.civ > 0) revela(u.civ, nx, ny, 1);
     eliminaPovoSeAcabou(dono);
     return MV_CONQUISTOU;
@@ -127,13 +134,15 @@ ResMov moveUnidade(int i, int d, bool forcaGuerra = false) {
   // os passageiros vão com o navio
   int ox = u.x, oy = u.y;
   if (I.dominio == D_MAR && I.carga > 0) {
+    // a sair de uma cidade, o navio leva as unidades de terra do jogador que lá estão de sentinela (como no original)
+    int lugares = (!eOceano(ox, oy) && !(I.flags & U_PORTA_AVIOES) && CIV[u.civ].humano) ? I.carga : 0;
     for (int k = 0; k < MAX_UNIDADES; ++k) {
       Unidade & p = U[k];
       if (!p.viva || k == i || p.civ != u.civ || p.x != ox || p.y != oy) continue;
-      bool passageiro = (UNIDADE[p.tipo].dominio == D_TERRA && eOceano(ox, oy)) ||
-                        (UNIDADE[p.tipo].dominio == D_AR && (I.flags & U_PORTA_AVIOES) && eOceano(ox, oy)) ||
-                        (UNIDADE[p.tipo].dominio == D_TERRA && p.estado == EU_SENTINELA && (I.flags & U_PORTA_AVIOES) == 0 &&
-                         haCidadeEm(ox, oy) && false);
+      const InfoUnidade & P = UNIDADE[p.tipo];
+      bool passageiro = (P.dominio == D_TERRA && eOceano(ox, oy)) ||
+                        (P.dominio == D_AR && (I.flags & U_PORTA_AVIOES) && eOceano(ox, oy));
+      if (!passageiro && lugares > 0 && P.dominio == D_TERRA && p.estado == EU_SENTINELA) { passageiro = true; --lugares; }
       if (passageiro) { p.x = nx; p.y = ny; }
     }
   }
@@ -153,6 +162,7 @@ ResMov moveUnidade(int i, int d, bool forcaGuerra = false) {
       }
     }
   }
+  animaIA(i, u.civ, ox, oy, nx, ny, 0);
   if (I.dominio == D_TERRA && temAldeia(nx, ny)) entraAldeia(i);
   return embarca ? MV_EMBARCOU : MV_OK;
 }
@@ -213,7 +223,7 @@ void acabaProducao(int ci) {
     k.escudos -= UNIDADE[p].custo;
     if (n >= 0 && humano) mensagemEm(civ, k.x, k.y, "%s fez %s.", k.nome, UNIDADE[p].nome);
     arrumaCidade(ci);
-    if (!humano) escolheProducaoIA(ci);
+    if (!humano || producaoAuto(k)) escolheProducaoIA(ci);
     return;
   }
   if (p < PROD_MARAV) {
@@ -235,6 +245,7 @@ void acabaProducao(int ci) {
     int w = p - PROD_MARAV;
     k.escudos -= MARAVILHA[w].custo;
     maravilhaCidade[w] = ci;
+    if (civ == jogador) pedeCena(CN_MARAVILHA, w, ci);
     mensagemEm(civ, k.x, k.y, "%s: os %s acabaram %s!", k.nome, nomePovo(civ), MARAVILHA[w].nome);
     // efeitos imediatos
     if (w == W_DARWIN) {
@@ -248,12 +259,12 @@ void acabaProducao(int ci) {
     if (w == W_APOLLO) memset(mapaVis, 0xFF, MAPA_N);
     // quem estava a fazer a mesma maravilha muda de obra
     for (int j = 0; j < MAX_CIDADES; ++j) if (CID[j].viva && j != ci && CID[j].prod == p) {
-      if (CID[j].civ == jogador) { mensagemEm(jogador, CID[j].x, CID[j].y, "%s já não pode fazer %s.", CID[j].nome, MARAVILHA[w].nome); pedeProducao[nPedeProducao++ % MAX_CIDADES] = j; }
+      if (CID[j].civ == jogador && !producaoAuto(CID[j])) { mensagemEm(jogador, CID[j].x, CID[j].y, "%s já não pode fazer %s.", CID[j].nome, MARAVILHA[w].nome); pedeProducao[nPedeProducao++ % MAX_CIDADES] = j; }
       else escolheProducaoIA(j);
       CID[j].prod = UN_MILICIA;
     }
   }
-  if (humano) { if (nPedeProducao < MAX_CIDADES) pedeProducao[nPedeProducao++] = ci; }
+  if (humano && !producaoAuto(k)) { if (nPedeProducao < MAX_CIDADES) pedeProducao[nPedeProducao++] = ci; }
   else escolheProducaoIA(ci);
 }
 
@@ -310,7 +321,7 @@ void processaCidade(int ci, int & ouro, int & ciencia) {
     k.escudos = 0;
   }
   if (!podeProduzir(ci, k.prod) && k.prod >= PROD_EDIF) {
-    if (civ == jogador) { if (nPedeProducao < MAX_CIDADES) pedeProducao[nPedeProducao++] = ci; }
+    if (civ == jogador && !producaoAuto(k)) { if (nPedeProducao < MAX_CIDADES) pedeProducao[nPedeProducao++] = ci; }
     else escolheProducaoIA(ci);
   }
   if (k.escudos >= custoProd(k.prod) && podeProduzir(ci, k.prod)) acabaProducao(ci);
@@ -400,7 +411,7 @@ void inicioTurnoCiv(int civ) {
       int t = C.pesquisa;
       C.lampadas -= custoTec(civ);
       ganhaTec(civ, t, true);
-      if (civ == jogador) mensagem("Os nossos sábios descobriram: %s!", TEC[t].nome);
+      if (civ == jogador && nTecsNovas > 0 && tecsNovas[nTecsNovas - 1] == t) tecsNovasSabios[nTecsNovas - 1] = 1;   // a janela diz "os nossos sábios"
       C.pesquisa = SEM_TEC;
       if (!C.humano) escolhePesquisaIA(civ);
     }

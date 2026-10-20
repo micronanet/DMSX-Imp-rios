@@ -14,25 +14,32 @@
 //
 // Teclas no mapa (como no original):
 //   setas / teclado numérico (7 9 1 3 = diagonais)  mover   ENTER  ordens / fim do turno
-//   B fundar cidade   R estrada   I regar   M mina   F fortificar   S sentinela   G ir para
+//   B fundar cidade   R estrada   I regar   M mina (colonos)   F fortificar   S sentinela
+//   G ou M ir para (depois C: lista das nossas cidades)   A atacar uma cidade inimiga
 //   W esperar   ESPAÇO sem ordens   H casa   D dispensar   U acordar   C cidade   V ver
-//   T impostos   X revolução   Y diplomacia   F1 cidades   F3 povos   F6 ciência
+//   T impostos   X revolução   Y diplomacia   F1 cidades   F2 unidades a dormir   F3 povos   F6 ciência
 //   F7 maravilhas   F9 pontuação   F10 gravar   ESC menu do jogo
 // Joystick: direções (diagonais com duas), botão A = ordens / escolher, botão B = menu / voltar.
 // =====================================================================
 
 #include "fabgl.h"
 #include <Wire.h>
+#include <SPI.h>
 #include <SD.h>
 using namespace fabgl;
 
 fabgl::VGAController DisplayController;
 fabgl::Canvas        canvas(&DisplayController);
 fabgl::PS2Controller PS2;
+// cartão SD no seu próprio SPI (HSPI: CLK 14, MISO 2, MOSI 12, CS 13). O SPI por omissão usa os
+// GPIO 18, 19 e 23, que são do VGA: com SD.begin(13) sem mais nada, a imagem desaparece.
+SPIClass spiSD(HSPI);
 SoundGenerator       soundGenerator;
 
 #include "arte.h"
+#include "ilus.h"
 #include "dados.h"
+#include "textos.h"
 #include "base.h"
 #include "estado.h"
 #include "mundo.h"
@@ -41,9 +48,11 @@ SoundGenerator       soundGenerator;
 #include "ia.h"
 #include "ecras.h"
 #include "jogo.h"
+#include "cenas.h"
 
 void setup() {
   Serial.begin(115200);
+  montaSD();             // o cartão primeiro, enquanto há RAM interna à vontade
   PS2.begin(PS2Preset::KeyboardPort0, KbdMode::CreateVirtualKeysQueue);
   DisplayController.begin(GPIO_NUM_22, GPIO_NUM_21, GPIO_NUM_19, GPIO_NUM_18,
                           GPIO_NUM_5, GPIO_NUM_4, GPIO_NUM_23, GPIO_NUM_15);
@@ -77,7 +86,6 @@ void setup() {
   temJoystick = Wire.endTransmission() == 0;
   if (temJoystick) { Wire.beginTransmission(0x20); Wire.write(0x00); Wire.write(0xFF); Wire.endTransmission(); }
 
-  temSD = SD.begin(13);
   Serial.printf("IMPERIOS: joystick %s, cartao SD %s\n", temJoystick ? "sim" : "nao", temSD ? "sim" : "nao");
   entraTitulo();
 }
@@ -105,5 +113,10 @@ void loop() {
     case M_FIM:       atualizaFim(); break;
     case M_ESPERA:    break;
     case M_ENCONTRO:  atualizaEncontro(); break;
+    case M_DESCOBERTA: atualizaDescoberta(); break;
+    case M_ATAQUE:    atualizaAtaque(); break;
+    case M_NOME:      atualizaNome(); break;
+    case M_MUNDO:     atualizaMundo(); break;
+    case M_CENA:      atualizaCena(); break;
   }
 }

@@ -3,7 +3,14 @@
 // =====================================================================
 #pragma once
 
-const int MAPA_W = 80, MAPA_H = 50, MAPA_N = MAPA_W * MAPA_H;
+// o tamanho do mapa escolhe-se no início do jogo (a memória reserva-se para o maior)
+const int MAPA_W_MAX = 112, MAPA_H_MAX = 70, MAPA_N_MAX = MAPA_W_MAX * MAPA_H_MAX;
+int MAPA_W = 80, MAPA_H = 50, MAPA_N = 80 * 50;
+// opções do mundo (como no original, mais as ilhas e os recursos)
+struct OpcoesMundo { uint8_t tamanho, terra, ilhas, clima, temperatura, idade, recursos; };
+OpcoesMundo mundo = { 1, 1, 1, 1, 1, 1, 1 };
+const uint8_t TAM_W[4] = { 64, 80, 96, 112 }, TAM_H[4] = { 40, 50, 60, 70 };
+void poeTamanhoMapa(int w, int h) { MAPA_W = w; MAPA_H = h; MAPA_N = w * h; }
 const int MAX_UNIDADES = 384;
 const int MAX_CIDADES  = 96;
 const int N_CIVS       = 8;          // 0 = bárbaros, 1..7 = povos
@@ -56,11 +63,14 @@ struct Cidade {
   uint32_t trab;          // casas trabalhadas (bits 0..20, ver RAIO_CIDADE)
   uint8_t  desordem;      // turnos seguidos em desordem
   uint8_t  comprou;       // já comprou este turno
-  uint8_t  fundada;       // (para o desenho) 1 se é a capital original
+  uint8_t  fundada;       // bit 0: capital original; bit 1 (CID_AUTO): produção automática
   uint8_t  rotaCom;       // rotas de comércio (caravanas), 0..3
 };
 Cidade * CID = nullptr;
 const uint8_t PROD_EDIF = 64, PROD_MARAV = 128;
+const uint8_t CID_AUTO = 2;          // em Cidade::fundada: o governador escolhe a produção
+const int PROD_AUTO = 254;            // item "Auto" da lista de produção
+inline bool producaoAuto(const Cidade & k) { return k.fundada & CID_AUTO; }
 
 // ---------------- povos ----------------
 struct Civ {
@@ -86,6 +96,13 @@ struct Civ {
   int16_t  pontos;
 };
 Civ CIV[N_CIVS];
+// cenas animadas à espera de ser mostradas (maravilha construída, cidade conquistada)
+enum TipoCenaJogo : uint8_t { CN_MARAVILHA, CN_CONQUISTA, CN_DESCOBERTA };
+struct CenaPendente { uint8_t tipo, a, b; int16_t c; };
+const int MAX_CENAS = 6;
+CenaPendente cenasPendentes[MAX_CENAS];
+int nCenas = 0;
+void pedeCena(uint8_t tipo, int a, int c = 0, int b = 0) { if (nCenas < MAX_CENAS) { CenaPendente & p = cenasPendentes[nCenas++]; p.tipo = tipo; p.a = a; p.b = b; p.c = c; } }
 uint8_t encontrosPendentes = 0;   // bit c: falta mostrar o primeiro encontro com o povo c (o líder aparece e oferece a paz)
 
 // ---------------- jogo ----------------
@@ -122,10 +139,16 @@ void * reserva(size_t n) {
 }
 
 bool reservaMemoria() {
-  mapaTer  = (uint8_t *) reserva(MAPA_N);
-  mapaMelh = (uint8_t *) reserva(MAPA_N);
-  mapaVis  = (uint8_t *) reserva(MAPA_N);
-  mapaCont = (uint8_t *) reserva(MAPA_N);
+  mapaTer  = (uint8_t *) reserva(MAPA_N_MAX);
+  mapaMelh = (uint8_t *) reserva(MAPA_N_MAX);
+  mapaVis  = (uint8_t *) reserva(MAPA_N_MAX);
+  mapaCont = (uint8_t *) reserva(MAPA_N_MAX);
+  // memória de trabalho do gerador do mundo (fora da RAM interna, se houver PSRAM)
+  extern uint8_t * genA; extern uint8_t * genB; extern uint16_t * genFila;
+  genA = (uint8_t *) reserva(MAPA_N_MAX);
+  genB = (uint8_t *) reserva(MAPA_N_MAX);
+  genFila = (uint16_t *) reserva(MAPA_N_MAX * 2);
+  if (!genA || !genB || !genFila) return false;
   U   = (Unidade *) reserva(sizeof(Unidade) * MAX_UNIDADES);
   CID = (Cidade *)  reserva(sizeof(Cidade) * MAX_CIDADES);
   return mapaTer && mapaMelh && mapaVis && mapaCont && U && CID;
